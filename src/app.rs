@@ -747,7 +747,11 @@ fn preserve_credential_state(existing: &[OAuthCredential], fresh: &mut [OAuthCre
         };
 
         cred.stats = previous.stats.clone();
-        if previous.access_token == cred.access_token {
+        // Only carry over the cached usage when the credential is still
+        // pollable: if the token has expired we stop fetching (see
+        // `UsagePoller::refresh_entries`), so reusing a stale snapshot would
+        // keep rendering a "live" session for an invalid credential.
+        if previous.access_token == cred.access_token && !cred.is_expired() {
             cred.usage = previous.usage.clone();
         }
     }
