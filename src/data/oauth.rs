@@ -536,7 +536,7 @@ mod tests {
         )
         .unwrap();
 
-        let creds = discover_credentials(&[projects.clone()]);
+        let creds = discover_credentials(std::slice::from_ref(&projects));
         assert_eq!(creds.len(), 1);
         assert_eq!(creds[0].subscription_type.as_deref(), Some("max"));
         assert_eq!(

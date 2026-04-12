@@ -273,7 +273,7 @@ mod tests {
                 r#"{"type":"assistant","timestamp":"2026-04-01T14:00:00.000Z","message":{"content":[{"type":"text","text":"You've hit your limit · resets 6pm"}]},"error":"rate_limit","isApiErrorMessage":true}"#,
             ],
         );
-        let hits = discover_rate_limit_hits(&[tmp.clone()]);
+        let hits = discover_rate_limit_hits(std::slice::from_ref(&tmp));
         assert_eq!(hits.len(), 1);
         assert!(hits[0].message.contains("hit your limit"));
         let dur = hits[0].session_duration_min.unwrap();
@@ -291,7 +291,7 @@ mod tests {
                 r#"{"type":"assistant","timestamp":"2026-04-01T12:00:00.000Z","message":{"content":[{"type":"text","text":"rate_limit mentioned in conversation"}]}}"#,
             ],
         );
-        let hits = discover_rate_limit_hits(&[tmp.clone()]);
+        let hits = discover_rate_limit_hits(std::slice::from_ref(&tmp));
         assert!(hits.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -304,7 +304,7 @@ mod tests {
         let rl_line = r#"{"type":"assistant","timestamp":"2026-04-01T14:00:30.000Z","message":{"content":[{"type":"text","text":"limit hit"}]},"error":"rate_limit","isApiErrorMessage":true}"#;
         write_jsonl(&tmp, "a.jsonl", &[rl_line]);
         write_jsonl(&sub, "b.jsonl", &[rl_line]);
-        let hits = discover_rate_limit_hits(&[tmp.clone()]);
+        let hits = discover_rate_limit_hits(std::slice::from_ref(&tmp));
         assert_eq!(hits.len(), 1);
         let _ = std::fs::remove_dir_all(&tmp);
     }
