@@ -10,7 +10,7 @@ use super::credential_status::{
 };
 use super::forecast::ForecastSnapshot;
 use super::helpers::{
-    format_duration_label, format_rate_label, source_display_name, truncate_text,
+    blinking_dot_span, format_duration_label, format_rate_label, source_display_name, truncate_text,
 };
 
 pub(super) fn render_live_summary(
@@ -121,6 +121,7 @@ pub(super) fn render_live_summary(
         format!(" | {:.0}%", snapshot.utilization_pct)
     };
     let middle = Line::from(vec![
+        blinking_dot_span(tick, status_color),
         Span::styled(
             snapshot.status.label(),
             Style::default()
@@ -130,7 +131,7 @@ pub(super) fn render_live_summary(
         Span::styled(
             truncate_text(
                 &middle_suffix,
-                width.saturating_sub(snapshot.status.label().len()),
+                width.saturating_sub(snapshot.status.label().len() + 2),
             ),
             Style::default().fg(t.text_secondary),
         ),

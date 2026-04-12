@@ -7,13 +7,14 @@ use crate::ui::theme::theme;
 use super::credential_status::{credential_status_color, credential_status_message};
 use super::forecast::ForecastSnapshot;
 use super::gradient::gradient_color;
-use super::helpers::{format_duration_label, format_rate_label};
+use super::helpers::{blinking_dot_span, format_duration_label, format_rate_label};
 
 pub(super) fn render_session_forecast(
     frame: &mut Frame,
     area: Rect,
     forecast: Option<&ForecastSnapshot>,
     selected_cred: Option<&OAuthCredential>,
+    tick: usize,
 ) {
     let t = theme();
     let title = Line::from(vec![Span::styled(
@@ -113,6 +114,7 @@ pub(super) fn render_session_forecast(
     };
 
     let status_line = Line::from(vec![
+        blinking_dot_span(tick, snapshot.status.color(t)),
         Span::styled(
             snapshot.status.label(),
             Style::default()

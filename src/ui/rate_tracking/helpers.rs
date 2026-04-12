@@ -1,3 +1,18 @@
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
+
+pub(super) fn blinking_dot_span(tick: usize, color: Color) -> Span<'static> {
+    let on = (tick / 7).is_multiple_of(2);
+    if on {
+        Span::styled(
+            "● ",
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("  ")
+    }
+}
+
 pub(super) fn source_display_name<'a>(
     source_root: &'a str,
     source_names: &'a [String],

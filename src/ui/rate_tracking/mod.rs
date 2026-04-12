@@ -131,7 +131,7 @@ pub(crate) fn render(
     );
     render_kpi_bar(frame, right_rows[1], &bars, &filtered_hits);
 
-    render_session_forecast(frame, right_rows[2], forecast.as_ref(), selected_cred);
+    render_session_forecast(frame, right_rows[2], forecast.as_ref(), selected_cred, tick);
     render_usage_timeline(
         frame,
         right_rows[3],
