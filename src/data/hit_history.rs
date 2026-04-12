@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Timelike, Utc};
@@ -76,32 +75,57 @@ pub fn save(history: &HitHistory) {
 pub struct MergeResult {
     /// The full merged hit list, sorted descending by timestamp.
     pub hits: Vec<RateLimitHit>,
-    /// `true` when the merge introduced a fresh hit whose bucket key was
-    /// not already in history (i.e. a newly observed rate-limit event).
+    /// `true` when the merge either added a brand-new bucket or enriched an
+    /// existing entry (populated `per_model` / `session_duration_min` that
+    /// were previously missing). Used by the caller to decide whether to
+    /// persist history to disk.
     pub changed: bool,
 }
 
 impl HitHistory {
-    /// Merge fresh hits into persisted history (dedup by bucket key, fresh wins).
+    /// Merge fresh hits into persisted history (dedup by bucket key).
+    ///
+    /// The merge is asymmetric: on a collision we keep the richer value on
+    /// each field so a fresh scan that can no longer compute
+    /// `per_model` / `session_duration_min` (e.g. the source JSONL has been
+    /// rotated out) doesn't wipe data that was previously resolved.
     pub fn merge_fresh_hits(&mut self, fresh_hits: &[RateLimitHit]) -> MergeResult {
-        let existing_keys: HashSet<String> =
-            self.entries.iter().map(|e| e.dedup_key.clone()).collect();
-        let fresh_keys: HashSet<String> = fresh_hits
-            .iter()
-            .map(|h| dedup_key(&h.timestamp, &h.source_root))
-            .collect();
-
-        self.entries.retain(|e| !fresh_keys.contains(&e.dedup_key));
+        let mut changed = false;
 
         for hit in fresh_hits {
             let key = dedup_key(&hit.timestamp, &hit.source_root);
-            self.entries.push(HitHistoryEntry {
-                timestamp: hit.timestamp,
-                source_root: hit.source_root.clone(),
-                per_model: hit.per_model.clone(),
-                session_duration_min: hit.session_duration_min,
-                dedup_key: key,
-            });
+
+            match self.entries.iter_mut().find(|e| e.dedup_key == key) {
+                Some(existing) => {
+                    let new_per_model = if hit.per_model.is_empty() {
+                        existing.per_model.clone()
+                    } else {
+                        hit.per_model.clone()
+                    };
+                    let new_duration = hit.session_duration_min.or(existing.session_duration_min);
+
+                    let per_model_differs = new_per_model.len() != existing.per_model.len()
+                        || per_model_total_tokens(&new_per_model)
+                            != per_model_total_tokens(&existing.per_model);
+                    if per_model_differs || new_duration != existing.session_duration_min {
+                        changed = true;
+                    }
+
+                    existing.per_model = new_per_model;
+                    existing.session_duration_min = new_duration;
+                    existing.timestamp = hit.timestamp;
+                }
+                None => {
+                    changed = true;
+                    self.entries.push(HitHistoryEntry {
+                        timestamp: hit.timestamp,
+                        source_root: hit.source_root.clone(),
+                        per_model: hit.per_model.clone(),
+                        session_duration_min: hit.session_duration_min,
+                        dedup_key: key,
+                    });
+                }
+            }
         }
 
         let mut hits: Vec<RateLimitHit> = self
@@ -118,7 +142,6 @@ impl HitHistory {
             .collect();
 
         hits.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        let changed = fresh_keys.iter().any(|k| !existing_keys.contains(k));
 
         MergeResult { hits, changed }
     }
