@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -39,12 +40,16 @@ pub struct UsageReport {
 /// Debug / display stats for usage polling.
 #[derive(Debug, Clone, Default)]
 pub struct UsageStats {
+    /// Total attempted API calls, including failed ones.
+    pub attempt_count: u32,
     /// Total successful API calls.
     pub call_count: u32,
     /// Total 429 responses.
     pub rate_limit_count: u32,
     /// When the last successful fetch happened.
     pub last_fetch: Option<Instant>,
+    /// Short reason from the latest failed attempt.
+    pub last_error: Option<String>,
 }
 
 impl UsageStats {
@@ -102,11 +107,13 @@ impl OAuthCredential {
 
 /// Result sent back from a background usage fetch thread.
 pub struct UsageFetchResult {
-    /// Index into the credentials vec.
-    pub index: usize,
+    /// Which source root the result belongs to.
+    pub source_root: String,
     pub usage: Option<UsageReport>,
     /// Whether we got a 429.
     pub was_rate_limited: bool,
+    /// Human-readable reason when we failed to obtain usage data.
+    pub error: Option<String>,
 }
 
 /// Per-credential polling state (not cloned into render — lives in App).
@@ -118,6 +125,7 @@ pub struct UsagePoller {
 }
 
 struct PollerEntry {
+    source_root: String,
     next_fetch: Instant,
     in_flight: bool,
     token: Option<String>,
@@ -135,6 +143,11 @@ fn random_interval() -> Duration {
 }
 
 impl UsagePoller {
+    /// Returns true if any credential has a usage fetch currently in flight.
+    pub fn has_in_flight(&self) -> bool {
+        self.entries.iter().any(|e| e.in_flight)
+    }
+
     /// Force all credentials to poll immediately on the next tick.
     pub fn force_poll_all(&mut self) {
         let now = Instant::now();
@@ -150,6 +163,7 @@ impl UsagePoller {
         let entries = credentials
             .iter()
             .map(|c| PollerEntry {
+                source_root: c.source_root.to_string_lossy().to_string(),
                 // Already fetched at startup — next refresh in 5-10 min
                 next_fetch: Instant::now() + random_interval(),
                 in_flight: false,
@@ -160,6 +174,70 @@ impl UsagePoller {
         Self { entries, tx, rx }
     }
 
+    /// Reconcile polling entries with a fresh credential discovery pass.
+    /// Existing timers are preserved where possible; newly pollable entries
+    /// are scheduled immediately.
+    pub fn refresh_entries(&mut self, credentials: &[OAuthCredential]) -> bool {
+        let now = Instant::now();
+        let mut old_entries: HashMap<String, PollerEntry> = std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|entry| (entry.source_root.clone(), entry))
+            .collect();
+        let mut should_poll_now = false;
+
+        self.entries = credentials
+            .iter()
+            .map(|cred| {
+                let source_root = cred.source_root.to_string_lossy().to_string();
+                let token = cred.access_token.clone();
+                let expired = cred.is_expired();
+
+                match old_entries.remove(&source_root) {
+                    Some(mut entry) => {
+                        let became_pollable =
+                            (entry.token.is_none() || entry.expired) && token.is_some() && !expired;
+                        let token_changed = entry.token != token;
+                        entry.source_root = source_root;
+                        entry.token = token;
+                        entry.expired = expired;
+
+                        if entry.token.is_none() || entry.expired {
+                            entry.in_flight = false;
+                        }
+
+                        if became_pollable
+                            || (token_changed && entry.token.is_some() && !entry.expired)
+                        {
+                            entry.next_fetch = now;
+                            should_poll_now = true;
+                        }
+
+                        entry
+                    }
+                    None => {
+                        let pollable = token.is_some() && !expired;
+                        if pollable {
+                            should_poll_now = true;
+                        }
+                        PollerEntry {
+                            source_root,
+                            next_fetch: if pollable {
+                                now
+                            } else {
+                                now + random_interval()
+                            },
+                            in_flight: false,
+                            token,
+                            expired,
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        should_poll_now
+    }
+
     /// Call this in the event loop. Spawns background fetches when timers expire,
     /// and applies results back to the credentials vec.
     /// Returns `true` if any credential's usage was updated this tick.
@@ -167,7 +245,7 @@ impl UsagePoller {
         let now = Instant::now();
 
         // Spawn fetches for credentials whose timer has expired
-        for (i, entry) in self.entries.iter_mut().enumerate() {
+        for entry in &mut self.entries {
             if entry.in_flight || entry.token.is_none() || entry.expired {
                 continue;
             }
@@ -175,12 +253,14 @@ impl UsagePoller {
                 entry.in_flight = true;
                 let tx = self.tx.clone();
                 let token = entry.token.clone().unwrap();
+                let source_root = entry.source_root.clone();
                 std::thread::spawn(move || {
-                    let (usage, was_rate_limited) = fetch_usage_raw(&token);
+                    let result = fetch_usage_raw(&token);
                     let _ = tx.send(UsageFetchResult {
-                        index: i,
-                        usage,
-                        was_rate_limited,
+                        source_root,
+                        usage: result.usage,
+                        was_rate_limited: result.was_rate_limited,
+                        error: result.error,
                     });
                 });
             }
@@ -189,33 +269,50 @@ impl UsagePoller {
         // Collect results
         let mut updated = false;
         while let Ok(result) = self.rx.try_recv() {
-            let i = result.index;
-            if i >= credentials.len() {
+            let Some(i) = credentials.iter().position(|cred| {
+                cred.source_root.to_string_lossy().as_ref() == result.source_root.as_str()
+            }) else {
                 continue;
-            }
+            };
 
-            let entry = &mut self.entries[i];
+            let Some(entry) = self
+                .entries
+                .iter_mut()
+                .find(|entry| entry.source_root == result.source_root)
+            else {
+                continue;
+            };
             entry.in_flight = false;
             // Schedule next fetch with a new random interval
             entry.next_fetch = Instant::now() + random_interval();
 
             let stats = &mut credentials[i].stats;
-            stats.call_count += 1;
+            stats.attempt_count += 1;
             if result.was_rate_limited {
                 stats.rate_limit_count += 1;
             }
             if result.usage.is_some() {
                 stats.last_fetch = Some(Instant::now());
+                stats.call_count += 1;
+                stats.last_error = None;
                 credentials[i].usage = result.usage;
                 updated = true;
+            } else {
+                stats.last_error = result.error;
             }
         }
         updated
     }
 }
 
+struct FetchUsageResult {
+    usage: Option<UsageReport>,
+    was_rate_limited: bool,
+    error: Option<String>,
+}
+
 /// Raw fetch that distinguishes 429 from other errors.
-fn fetch_usage_raw(token: &str) -> (Option<UsageReport>, bool) {
+fn fetch_usage_raw(token: &str) -> FetchUsageResult {
     let result = ureq::get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", &format!("Bearer {}", token))
         .header("anthropic-beta", "oauth-2025-04-20")
@@ -225,11 +322,37 @@ fn fetch_usage_raw(token: &str) -> (Option<UsageReport>, bool) {
         Ok(mut resp) => {
             let body = resp.body_mut().read_to_string().unwrap_or_default();
             let usage = serde_json::from_str(&body).ok();
-            (usage, false)
+            if usage.is_some() {
+                FetchUsageResult {
+                    usage,
+                    was_rate_limited: false,
+                    error: None,
+                }
+            } else {
+                FetchUsageResult {
+                    usage: None,
+                    was_rate_limited: false,
+                    error: Some("Usage API returned an unreadable response".to_string()),
+                }
+            }
         }
         Err(e) => {
-            let is_429 = e.to_string().contains("429");
-            (None, is_429)
+            let err = e.to_string();
+            let is_429 = err.contains("429");
+            let error = if is_429 {
+                "Usage API rate-limited this credential".to_string()
+            } else if err.contains("401") {
+                "Usage API rejected the saved token".to_string()
+            } else if err.contains("403") {
+                "Usage API denied access for this credential".to_string()
+            } else {
+                "Usage API request failed".to_string()
+            };
+            FetchUsageResult {
+                usage: None,
+                was_rate_limited: is_429,
+                error: Some(error),
+            }
         }
     }
 }
@@ -244,12 +367,19 @@ pub fn discover_credentials_with_usage(source_roots: &[PathBuf]) -> Vec<OAuthCre
     let mut creds = discover_credentials(source_roots);
     creds.par_iter_mut().for_each(|cred| {
         if cred.access_token.is_some() && !cred.is_expired() {
-            let (usage, _) = fetch_usage_raw(cred.access_token.as_deref().unwrap());
-            if usage.is_some() {
+            let result = fetch_usage_raw(cred.access_token.as_deref().unwrap());
+            cred.stats.attempt_count += 1;
+            if result.was_rate_limited {
+                cred.stats.rate_limit_count += 1;
+            }
+            if result.usage.is_some() {
                 cred.stats.last_fetch = Some(Instant::now());
                 cred.stats.call_count += 1;
+                cred.stats.last_error = None;
+            } else {
+                cred.stats.last_error = result.error.clone();
             }
-            cred.usage = usage;
+            cred.usage = result.usage;
         }
     });
     creds

@@ -17,8 +17,11 @@ pub struct RateLimitHit {
     /// Session duration in minutes: time from first assistant message to this hit,
     /// considering only messages from the same source_root.
     pub session_duration_min: Option<f64>,
-    /// Total tokens consumed during this rate-limited session.
+    /// Total tokens (input + output) consumed during this rate-limited session.
+    /// Derived from `per_model`; kept denormalized for cheap rendering.
     pub tokens: u64,
+    /// Per-model tokens + cost split observed across the rate-limited session.
+    pub per_model: Vec<super::models::PerModelUsage>,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +216,7 @@ pub fn discover_rate_limit_hits(source_roots: &[PathBuf]) -> Vec<RateLimitHit> {
                 source_root: root_str,
                 session_duration_min: duration,
                 tokens: 0,
+                per_model: Vec::new(),
             }
         })
         .collect();

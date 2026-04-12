@@ -1,4 +1,53 @@
+use serde::{Deserialize, Serialize};
+
 pub(crate) const TOKENS_PER_MILLION: f64 = 1_000_000.0;
+
+/// Output tokens cost ~5x more than input tokens across every model in
+/// `PRICING_TABLE` below. Used to weight stacked bars by cost contribution.
+pub(crate) const OUTPUT_COST_WEIGHT: f64 = 5.0;
+
+/// Per-model token counts and USD cost contributions within a time window.
+/// Stored in rate-history / hit-history so that the per-side cost split
+/// (input / cache / output) survives even after the underlying JSONL
+/// events are rotated out of the index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerModelUsage {
+    /// Full model string as seen in the JSONL (e.g. "claude-opus-4-6-...").
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub input_cost: f64,
+    pub cache_cost: f64,
+    pub output_cost: f64,
+}
+
+impl PerModelUsage {
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
+
+    pub fn total_cost(&self) -> f64 {
+        self.input_cost + self.cache_cost + self.output_cost
+    }
+}
+
+/// Sum `(input_cost, cache_cost, output_cost)` over a per-model breakdown.
+pub fn per_model_cost_split(per_model: &[PerModelUsage]) -> (f64, f64, f64) {
+    per_model.iter().fold((0.0, 0.0, 0.0), |acc, m| {
+        (
+            acc.0 + m.input_cost,
+            acc.1 + m.cache_cost,
+            acc.2 + m.output_cost,
+        )
+    })
+}
+
+/// Sum `(input_tokens + output_tokens)` over a per-model breakdown.
+pub fn per_model_total_tokens(per_model: &[PerModelUsage]) -> u64 {
+    per_model.iter().map(|m| m.total_tokens()).sum()
+}
 
 /// (pattern, (input_price, output_price, cache_read_price)) per million tokens.
 const PRICING_TABLE: &[(&str, (f64, f64, f64))] = &[
@@ -46,5 +95,22 @@ pub(crate) fn format_tokens(n: u64) -> String {
         format!("{:.1}K", n as f64 / 1_000.0)
     } else {
         format!("{}", n)
+    }
+}
+
+/// Format a USD cost as a compact human-readable string
+/// (e.g. "¢42", "$1.23", "$45", "$1.2K").
+pub(crate) fn format_cost(c: f64) -> String {
+    if !c.is_finite() || c <= 0.0 {
+        return "$0".to_string();
+    }
+    if c >= 1000.0 {
+        format!("${:.1}K", c / 1000.0)
+    } else if c >= 100.0 {
+        format!("${:.0}", c)
+    } else if c >= 1.0 {
+        format!("${:.2}", c)
+    } else {
+        format!("¢{:.0}", c * 100.0)
     }
 }
