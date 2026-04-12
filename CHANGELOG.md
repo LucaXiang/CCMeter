@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0-beta.2] - 2026-04-13
+
+### Added
+- Async discovery refresh with non-blocking state management for smoother UI updates
+
+### Changed
+- Modularize rate tracking UI into 13 focused component modules for better maintainability
+- Restructure data models and handlers for usage tracking
+- Improve discovery configuration and error handling
+- Update dashboard styling to align with new rate tracking components
+
 ## [2.0.0-beta.1] - 2026-04-09
 
 ### Added
