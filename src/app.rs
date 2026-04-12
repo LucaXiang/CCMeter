@@ -57,6 +57,18 @@ impl CachedKpi {
 
 type ReloadResult = (cache::Cache, EventIndex);
 
+struct DiscoveryRefresh {
+    discovery_changed: bool,
+    should_poll_now: bool,
+}
+
+struct DiscoveryResult {
+    raw_groups: Vec<discovery::ProjectGroup>,
+    root_cwd_map: HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+    session_map: HashMap<String, (String, String)>,
+    fresh_credentials: Vec<OAuthCredential>,
+}
+
 // ---------------------------------------------------------------------------
 // Sub-structs for logical grouping
 // ---------------------------------------------------------------------------
@@ -120,12 +132,18 @@ pub(crate) struct App {
     reload_tx: mpsc::Sender<ReloadResult>,
     reload_rx: mpsc::Receiver<ReloadResult>,
 
+    pub(crate) discovery_in_flight: bool,
+    discovery_tx: mpsc::Sender<DiscoveryResult>,
+    discovery_rx: mpsc::Receiver<DiscoveryResult>,
+    manual_refresh_pending: bool,
+
     pub(crate) start_time: std::time::Instant,
     pub(crate) last_reload: std::time::Instant,
+    last_refresh: std::time::Instant,
 
     usage_poller: UsagePoller,
-    #[allow(dead_code)]
     pub(crate) reload_interval: Duration,
+    refresh_requested: bool,
 
     pub(crate) update_info: Option<UpdateInfo>,
     update_rx: mpsc::Receiver<UpdateInfo>,
@@ -153,12 +171,13 @@ impl App {
         let (daily_tokens, thresholds) = compute_daily_and_thresholds(&merged_cache, None, None);
         let minute_tokens = index.build_minute_tokens(None, None);
 
-        let root_paths: Vec<std::path::PathBuf> = root_cwd_map.keys().cloned().collect();
+        let root_paths = sorted_root_paths(&root_cwd_map);
         let mut fresh_hits = crate::data::rate_limits::discover_rate_limit_hits(&root_paths);
         compute_hit_tokens(&mut fresh_hits, &index);
         let mut hit_history = hit_history::load();
-        let rate_limit_hits = hit_history.merge_fresh_hits(&fresh_hits);
-        if !fresh_hits.is_empty() {
+        let merge = hit_history.merge_fresh_hits(&fresh_hits);
+        let rate_limit_hits = merge.hits;
+        if merge.changed {
             hit_history::save(&hit_history);
         }
         let oauth_credentials = crate::data::oauth::discover_credentials_with_usage(&root_paths);
@@ -191,6 +210,7 @@ impl App {
         );
 
         let (reload_tx, reload_rx) = mpsc::channel::<ReloadResult>();
+        let (discovery_tx, discovery_rx) = mpsc::channel::<DiscoveryResult>();
         let usage_poller = UsagePoller::new(&oauth_credentials);
         let update_rx = update_check::spawn_check();
 
@@ -226,10 +246,16 @@ impl App {
             reloading: false,
             reload_tx,
             reload_rx,
+            discovery_in_flight: false,
+            discovery_tx,
+            discovery_rx,
+            manual_refresh_pending: false,
             start_time: std::time::Instant::now(),
             last_reload: std::time::Instant::now(),
+            last_refresh: std::time::Instant::now(),
             usage_poller,
             reload_interval: Duration::from_secs(5 * 60),
+            refresh_requested: false,
             update_info: None,
             update_rx,
         };
@@ -287,9 +313,109 @@ impl App {
         self.render_dirty = false;
     }
 
+    fn refresh_rate_limit_hits(&mut self) {
+        let root_paths: Vec<std::path::PathBuf> =
+            session_map_root_inventory(&self.config.session_map)
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .collect();
+        let mut fresh_hits = crate::data::rate_limits::discover_rate_limit_hits(&root_paths);
+        compute_hit_tokens(&mut fresh_hits, &self.data.index);
+        let merge = self.data.hit_history.merge_fresh_hits(&fresh_hits);
+        self.data.rate_limit_hits = merge.hits;
+        if merge.changed {
+            hit_history::save(&self.data.hit_history);
+        }
+    }
+
+    fn apply_discovery_result(&mut self, result: DiscoveryResult) -> DiscoveryRefresh {
+        let selected_source_root = self
+            .config
+            .source_roots
+            .get(self.source_index)
+            .cloned()
+            .flatten();
+        let selected_project_root = self
+            .project_index
+            .and_then(|i| self.render.display_order.get(i))
+            .map(|&gi| self.config.groups[gi].root_key());
+        let selected_tracking_root = self
+            .data
+            .oauth_credentials
+            .get(self.rate_tracking_selected)
+            .map(|cred| cred.source_root.to_string_lossy().to_string());
+        let old_roots = session_map_root_inventory(&self.config.session_map);
+
+        let DiscoveryResult {
+            raw_groups,
+            root_cwd_map,
+            session_map,
+            mut fresh_credentials,
+        } = result;
+
+        let discovery_changed = old_roots != root_map_inventory(&root_cwd_map)
+            || self.config.session_map.as_ref() != &session_map;
+
+        preserve_credential_state(&self.data.oauth_credentials, &mut fresh_credentials);
+        let should_poll_now = self.usage_poller.refresh_entries(&fresh_credentials);
+
+        let raw_groups = Arc::new(raw_groups);
+        let session_map = Arc::new(session_map);
+        let groups = overrides::apply_overrides(&raw_groups, &mut self.config.overrides);
+        let (source_names, source_roots) = build_source_list(&root_cwd_map);
+
+        self.config.raw_groups = raw_groups;
+        self.config.session_map = session_map;
+        self.config.groups = groups;
+        self.config.source_names = source_names;
+        self.config.source_roots = source_roots;
+        self.data.oauth_credentials = fresh_credentials;
+
+        self.source_index = selected_source_root
+            .as_deref()
+            .and_then(|root| {
+                self.config
+                    .source_roots
+                    .iter()
+                    .position(|candidate| candidate.as_deref() == Some(root))
+            })
+            .unwrap_or(0)
+            .min(self.config.source_roots.len().saturating_sub(1));
+
+        self.rate_tracking_selected = selected_tracking_root
+            .as_deref()
+            .and_then(|root| {
+                self.data
+                    .oauth_credentials
+                    .iter()
+                    .position(|cred| cred.source_root.to_string_lossy().as_ref() == root)
+            })
+            .unwrap_or(0)
+            .min(self.data.oauth_credentials.len().saturating_sub(1));
+
+        self.project_index = None;
+        self.recompute_tokens();
+        self.recompute_render_cache();
+
+        self.project_index = selected_project_root.as_deref().and_then(|root| {
+            self.render
+                .display_order
+                .iter()
+                .position(|&gi| self.config.groups[gi].root_key() == root)
+        });
+        if self.project_index.is_some() {
+            self.recompute_tokens();
+            self.recompute_render_cache();
+        }
+
+        DiscoveryRefresh {
+            discovery_changed,
+            should_poll_now,
+        }
+    }
+
     /// Persist estimated token capacity for active 5h sessions into rate-history.
     fn record_rate_history(&mut self) {
-        let today = Local::now().date_naive();
         let mut changed = false;
 
         for cred in &self.data.oauth_credentials {
@@ -337,9 +463,18 @@ impl App {
             }
 
             let estimated_tokens = (tokens as f64 / (utilization / 100.0)).round() as u64;
-            self.data
-                .rate_history
-                .record(&source_root, resets_at_str, estimated_tokens, today);
+            let per_model =
+                self.data
+                    .index
+                    .per_model_breakdown_in_window(&source_root, start_local, end_local);
+            let session_date = start_local.date();
+            self.data.rate_history.record(
+                &source_root,
+                resets_at_str,
+                estimated_tokens,
+                per_model,
+                session_date,
+            );
             changed = true;
         }
 
@@ -379,11 +514,38 @@ impl App {
     }
 
     pub(crate) fn handle_reload(&mut self) {
-        // Poll usage API for each credential on its own random timer.
-        // A JSONL reload is triggered only after a successful usage poll.
+        let manual_refresh_requested = self.refresh_requested;
+        let refresh_due =
+            manual_refresh_requested || self.last_refresh.elapsed() >= self.reload_interval;
+
+        if refresh_due && !self.discovery_in_flight && !self.reloading {
+            spawn_discovery(&self.discovery_tx);
+            self.discovery_in_flight = true;
+            if manual_refresh_requested {
+                self.manual_refresh_pending = true;
+            }
+            self.refresh_requested = false;
+            self.last_refresh = std::time::Instant::now();
+        }
+
+        let mut discovery_changed = false;
+        let mut manual_refresh_completed = false;
+        if self.discovery_in_flight
+            && let Ok(result) = self.discovery_rx.try_recv()
+        {
+            let refresh = self.apply_discovery_result(result);
+            discovery_changed = refresh.discovery_changed;
+            if refresh.should_poll_now || self.manual_refresh_pending {
+                self.usage_poller.force_poll_all();
+            }
+            manual_refresh_completed = self.manual_refresh_pending;
+            self.manual_refresh_pending = false;
+            self.discovery_in_flight = false;
+        }
+
         let usage_updated = self.usage_poller.poll(&mut self.data.oauth_credentials);
 
-        if usage_updated
+        if (manual_refresh_completed || discovery_changed || usage_updated)
             && !self.reloading
             && self.last_reload.elapsed() >= Duration::from_millis(500)
         {
@@ -403,8 +565,18 @@ impl App {
             self.data.index = idx;
             self.reloading = false;
             self.recompute_tokens();
+            self.refresh_rate_limit_hits();
             self.record_rate_history();
         }
+    }
+
+    /// Returns true when any step of a refresh chain is in progress
+    /// (pending request, discovery thread, or JSONL reload thread).
+    pub(crate) fn is_busy(&self) -> bool {
+        self.reloading
+            || self.discovery_in_flight
+            || self.refresh_requested
+            || self.usage_poller.has_in_flight()
     }
 
     /// Returns false if the app should quit.
@@ -456,8 +628,8 @@ impl App {
                         self.rate_tracking_selected = (self.rate_tracking_selected + n - 1) % n;
                     }
                 }
-                KeyCode::Char('r') if !self.reloading => {
-                    self.usage_poller.force_poll_all();
+                KeyCode::Char('r') if !self.is_busy() => {
+                    self.refresh_requested = true;
                 }
                 _ => {}
             },
@@ -471,8 +643,8 @@ impl App {
                 KeyCode::Char('`') => {
                     self.switch_view(View::RateTracking);
                 }
-                KeyCode::Char('r') if !self.reloading => {
-                    self.usage_poller.force_poll_all();
+                KeyCode::Char('r') if !self.is_busy() => {
+                    self.refresh_requested = true;
                 }
                 KeyCode::Char('.') => {
                     self.view = View::Settings(Box::new(SettingsState::new(&self.config.groups)));
@@ -560,6 +732,49 @@ fn project_cwds_static(
             .filter_map(|s| s.cwd.clone())
             .collect()
     })
+}
+
+fn preserve_credential_state(existing: &[OAuthCredential], fresh: &mut [OAuthCredential]) {
+    let existing_by_root: HashMap<String, &OAuthCredential> = existing
+        .iter()
+        .map(|cred| (cred.source_root.to_string_lossy().to_string(), cred))
+        .collect();
+
+    for cred in fresh {
+        let root = cred.source_root.to_string_lossy().to_string();
+        let Some(previous) = existing_by_root.get(&root) else {
+            continue;
+        };
+
+        cred.stats = previous.stats.clone();
+        if previous.access_token == cred.access_token {
+            cred.usage = previous.usage.clone();
+        }
+    }
+}
+
+fn sorted_root_paths(
+    root_map: &HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+) -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = root_map.keys().cloned().collect();
+    roots.sort();
+    roots
+}
+
+fn root_map_inventory(
+    root_map: &HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+) -> Vec<String> {
+    sorted_root_paths(root_map)
+        .into_iter()
+        .map(|root| root.to_string_lossy().to_string())
+        .collect()
+}
+
+fn session_map_root_inventory(session_map: &HashMap<String, (String, String)>) -> Vec<String> {
+    let mut roots: Vec<String> = session_map.values().map(|(root, _)| root.clone()).collect();
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -651,8 +866,9 @@ fn compute_hit_tokens(hits: &mut [RateLimitHit], index: &EventIndex) {
             .with_timezone(&chrono::Local)
             .naive_local();
         let end_local = hit.timestamp.with_timezone(&chrono::Local).naive_local();
-        let tokens = index.tokens_in_window(&hit.source_root, start_local, end_local);
-        hit.tokens = tokens;
+        hit.tokens = index.tokens_in_window(&hit.source_root, start_local, end_local);
+        hit.per_model =
+            index.per_model_breakdown_in_window(&hit.source_root, start_local, end_local);
     }
 }
 
@@ -687,6 +903,22 @@ fn spawn_reload(
     std::thread::spawn(move || {
         let (cache, index) = load_data(&raw_groups, &session_map);
         let _ = tx.send((cache, index));
+    });
+}
+
+fn spawn_discovery(tx: &mpsc::Sender<DiscoveryResult>) {
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let (raw_groups, root_cwd_map, session_map) =
+            discovery::discover_project_groups_with_root_map();
+        let root_paths = sorted_root_paths(&root_cwd_map);
+        let fresh_credentials = crate::data::oauth::discover_credentials(&root_paths);
+        let _ = tx.send(DiscoveryResult {
+            raw_groups,
+            root_cwd_map,
+            session_map,
+            fresh_credentials,
+        });
     });
 }
 
