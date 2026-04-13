@@ -36,10 +36,53 @@ pub struct DayEntry {
     pub active_minutes: u64,
 }
 
+/// Bumped whenever the on-disk cache schema or aggregation logic changes in
+/// a way that would make pre-existing values inconsistent with a fresh parse.
+/// Caches with a different (or missing) version are dropped at load time.
+///
+/// History:
+/// - v2: `parse_session_files` now dedups events by `request_id` (max usage
+///   per request). Pre-fix caches over-counted tokens/cost on days with
+///   sub-agent activity (parent + sub-agent JSONLs both logged the same
+///   `req_…`), so the high-water-mark merge would freeze the inflated
+///   values in place.
+const CURRENT_SCHEMA_VERSION: u32 = 2;
+
 /// Full cache: source_root -> cwd -> date (YYYY-MM-DD) -> metrics.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Cache(HashMap<String, HashMap<String, HashMap<String, DayEntry>>>);
+
+/// On-disk wrapper. Pre-v2 caches were the bare `Cache` map at top level
+/// and fail this deserialize, triggering migration.
+#[derive(Debug, Deserialize)]
+struct VersionedCache {
+    schema_version: u32,
+    data: Cache,
+}
+
+/// Borrowing twin so `save` can serialize without cloning the full cache.
+#[derive(Serialize)]
+struct VersionedCacheRef<'a> {
+    schema_version: u32,
+    data: &'a Cache,
+}
+
+/// `Migrated` (planned schema bump, "cache rebuilt") and `Recovered`
+/// (genuine load failure) are surfaced separately so a real corruption
+/// isn't masked by the migration banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheLoad {
+    Fresh,
+    Migrated,
+    Recovered,
+}
+
+#[derive(Debug)]
+pub struct LoadOutcome {
+    pub cache: Cache,
+    pub state: CacheLoad,
+}
 
 impl Cache {
     pub fn new() -> Self {
@@ -110,15 +153,57 @@ fn cache_path() -> PathBuf {
     home.join(".config").join("ccmeter").join("history.json")
 }
 
-pub fn load() -> Cache {
-    let path = cache_path();
-    if !path.exists() {
-        return Cache::new();
+pub fn load() -> LoadOutcome {
+    let raw = match std::fs::read_to_string(cache_path()) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return LoadOutcome {
+                cache: Cache::new(),
+                state: CacheLoad::Fresh,
+            };
+        }
+        // Any other filesystem error (permissions, I/O) is a recovery
+        // scenario — the file is there but we can't read it.
+        Err(_) => {
+            return LoadOutcome {
+                cache: Cache::new(),
+                state: CacheLoad::Recovered,
+            };
+        }
+    };
+
+    // Path 1: current schema — clean load.
+    if let Ok(v) = serde_json::from_str::<VersionedCache>(&raw) {
+        if v.schema_version == CURRENT_SCHEMA_VERSION {
+            return LoadOutcome {
+                cache: v.data,
+                state: CacheLoad::Fresh,
+            };
+        }
+        // Wrapped but wrong version → deliberate migration.
+        return LoadOutcome {
+            cache: Cache::new(),
+            state: CacheLoad::Migrated,
+        };
     }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+
+    // Path 2: legacy pre-v2 cache was a bare `Cache` HashMap at the top
+    // level. If it parses as such, this is a planned migration from the
+    // pre-versioning era, not corruption.
+    if serde_json::from_str::<Cache>(&raw).is_ok() {
+        return LoadOutcome {
+            cache: Cache::new(),
+            state: CacheLoad::Migrated,
+        };
+    }
+
+    // Path 3: file is neither a versioned cache nor a legacy one — either
+    // truncated, corrupted, or produced by a tool we don't recognize.
+    // Surface this distinctly so the user knows the cache had a real issue.
+    LoadOutcome {
+        cache: Cache::new(),
+        state: CacheLoad::Recovered,
+    }
 }
 
 pub fn save(cache: &Cache) {
@@ -126,7 +211,11 @@ pub fn save(cache: &Cache) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(json) = serde_json::to_string_pretty(cache) {
+    let wrapped = VersionedCacheRef {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        data: cache,
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&wrapped) {
         let tmp = path.with_extension("json.tmp");
         if std::fs::write(&tmp, &json).is_ok() && std::fs::rename(&tmp, &path).is_err() {
             let _ = std::fs::write(&path, &json);
@@ -547,6 +636,9 @@ mod tests {
                 lines_added: 5,
                 lines_deleted: 3,
                 session_file: "session1.jsonl".into(),
+                request_id: None,
+                raw_cost_usd: None,
+                line_uuid: None,
             },
             Event {
                 timestamp: Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap(),
@@ -561,6 +653,9 @@ mod tests {
                 lines_added: 0,
                 lines_deleted: 0,
                 session_file: "session2.jsonl".into(),
+                request_id: None,
+                raw_cost_usd: None,
+                line_uuid: None,
             },
         ];
 
@@ -591,6 +686,9 @@ mod tests {
             lines_added: 0,
             lines_deleted: 0,
             session_file: "unknown.jsonl".into(),
+            request_id: None,
+            raw_cost_usd: None,
+            line_uuid: None,
         }];
 
         let cache = from_events(&events, &session_info);

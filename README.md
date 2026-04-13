@@ -128,9 +128,21 @@ CCMeter discovers Claude Code sessions by scanning your home directory for any f
 Session JSONL → parallel parse → daily aggregates → cached history → TUI render
 ```
 
+### Accurate token counting
+
+Claude Code logs the same API response in several places — once per streaming chunk, again in every sub-agent's transcript, again in any `/compact` retry. Summing every line naïvely inflates tokens by 2–3× on busy days.
+
+CCMeter dedupes by `requestId` (Anthropic's billing unit: one request = one invoice line). For each request it picks the most complete log, then re-emits it as per-chunk deltas so multi-minute streams keep their real timestamps. Activity from non-canonical mirror logs survives as zero-billing "ghost" markers, so `active_minutes` and code metrics stay accurate even when the canonical log is just a terminal snapshot. User-side patches (Edit/Write acceptances) are deduped by line `uuid` for the same reason.
+
+Result: totals match what Anthropic actually billed, and the minute-level timeline reflects real activity.
+
 ### Cache
 
-Parsed metrics are persisted to `~/.config/ccmeter/history.json`. On subsequent launches, only new or modified session files are parsed, everything else is served from cache, making startup near-instant even with thousands of sessions.
+Parsed metrics are persisted to `~/.config/ccmeter/history.json` so subsequent launches only re-parse new or modified session files.
+
+The cache is versioned. When CCMeter ships a change that would make pre-existing aggregates wrong (e.g. the dedup work above), the schema is bumped and any older cache is rebuilt from scratch on next launch — a one-time banner explains why historical totals may have shifted. A second banner appears if the cache was unreadable (corruption, disk error). Both dismiss on any keypress.
+
+**Upgrading from before the dedup fix?** Expect your historical numbers to drop on days with heavy sub-agent or `/compact` activity. That's the over-counting going away, not data loss.
 
 ### Per-project view
 

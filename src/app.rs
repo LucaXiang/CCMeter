@@ -147,6 +147,12 @@ pub(crate) struct App {
 
     pub(crate) update_info: Option<UpdateInfo>,
     update_rx: mpsc::Receiver<UpdateInfo>,
+
+    /// Outcome of the initial on-disk cache load. `Migrated` and
+    /// `Recovered` both trigger a one-time banner but with distinct
+    /// messages so the user can tell a planned schema bump apart from a
+    /// corrupted cache. Dismissed on the first user keypress.
+    pub(crate) cache_load_state: cache::CacheLoad,
 }
 
 impl App {
@@ -166,7 +172,17 @@ impl App {
             discovery::discover_project_groups_with_root_map();
         let raw_groups = Arc::new(raw_groups);
         let session_map = Arc::new(session_map);
-        let (merged_cache, index) = load_data(&raw_groups, &session_map);
+        let (merged_cache, index, mut cache_load_state) = load_data(&raw_groups, &session_map);
+        // Debug escape hatch for screenshotting the banners after a
+        // migration already happened. Set CCMETER_FORCE_BANNER=recovered
+        // for the corruption banner, anything else for the migration one.
+        if let Ok(kind) = std::env::var("CCMETER_FORCE_BANNER") {
+            cache_load_state = if kind.eq_ignore_ascii_case("recovered") {
+                cache::CacheLoad::Recovered
+            } else {
+                cache::CacheLoad::Migrated
+            };
+        }
 
         let (daily_tokens, thresholds) = compute_daily_and_thresholds(&merged_cache, None, None);
         let minute_tokens = index.build_minute_tokens(None, None);
@@ -258,6 +274,7 @@ impl App {
             refresh_requested: false,
             update_info: None,
             update_rx,
+            cache_load_state,
         };
         app.record_rate_history();
         app
@@ -589,6 +606,12 @@ impl App {
             return false;
         }
 
+        // Dismiss the cache-state notice on the first user keypress.
+        if self.cache_load_state != cache::CacheLoad::Fresh {
+            self.cache_load_state = cache::CacheLoad::Fresh;
+            self.render_dirty = true;
+        }
+
         // Tab/BackTab cycle time filters globally, except in Settings/RateTracking.
         if !matches!(self.view, View::Settings(_) | View::RateTracking) {
             match key.code {
@@ -879,7 +902,7 @@ fn compute_hit_tokens(hits: &mut [RateLimitHit], index: &EventIndex) {
 fn load_data(
     raw_groups: &[discovery::ProjectGroup],
     session_map: &HashMap<String, (String, String)>,
-) -> (cache::Cache, EventIndex) {
+) -> (cache::Cache, EventIndex, cache::CacheLoad) {
     let all_session_files: Vec<std::path::PathBuf> = raw_groups
         .iter()
         .flat_map(|g| g.sources.iter())
@@ -887,13 +910,13 @@ fn load_data(
         .collect();
     let events = parser::parse_session_files(&all_session_files);
 
-    let old_cache = cache::load();
+    let outcome = cache::load();
     let fresh_cache = cache::from_events(&events, session_map);
-    let merged = cache::merge(old_cache, &fresh_cache);
+    let merged = cache::merge(outcome.cache, &fresh_cache);
     cache::save(&merged);
 
     let index = EventIndex::build(&events, session_map);
-    (merged, index)
+    (merged, index, outcome.state)
 }
 
 fn spawn_reload(
@@ -905,7 +928,7 @@ fn spawn_reload(
     let session_map = Arc::clone(session_map);
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let (cache, index) = load_data(&raw_groups, &session_map);
+        let (cache, index, _) = load_data(&raw_groups, &session_map);
         let _ = tx.send((cache, index));
     });
 }
