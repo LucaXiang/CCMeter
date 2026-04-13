@@ -42,30 +42,33 @@ impl App {
             return;
         }
 
-        let has_update = self.update_info.is_some();
+        fn push(cs: &mut Vec<Constraint>, c: Constraint) -> usize {
+            cs.push(c);
+            cs.len() - 1
+        }
+        let mut constraints = vec![Constraint::Length(1)];
+        let update_idx = self
+            .update_info
+            .is_some()
+            .then(|| push(&mut constraints, Constraint::Length(1)));
+        // 4 rows: top border + title + hint + bottom border.
+        let cache_idx = (self.cache_load_state != crate::data::cache::CacheLoad::Fresh)
+            .then(|| push(&mut constraints, Constraint::Length(4)));
+        let content_idx = push(&mut constraints, Constraint::Min(1));
+        let footer_idx = push(&mut constraints, Constraint::Length(1));
+
         let outer = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(if has_update {
-                vec![
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ]
-            } else {
-                vec![
-                    Constraint::Length(1),
-                    Constraint::Length(0),
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ]
-            })
+            .constraints(constraints)
             .split(area);
 
-        self.draw_footer(frame, outer[3]);
+        self.draw_footer(frame, outer[footer_idx]);
 
-        if let Some(info) = &self.update_info {
-            self.draw_update_banner(frame, outer[1], info);
+        if let (Some(idx), Some(info)) = (update_idx, &self.update_info) {
+            self.draw_update_banner(frame, outer[idx], info);
+        }
+        if let Some(idx) = cache_idx {
+            self.draw_cache_state_banner(frame, outer[idx]);
         }
 
         // Replace time-filter / source tabs with a plain title in settings view
@@ -92,7 +95,7 @@ impl App {
             self.draw_header(frame, &top_cols);
         }
 
-        let content_area = outer[2];
+        let content_area = outer[content_idx];
         if content_area.width < MIN_WIDTH || content_area.height < MIN_HEIGHT {
             self.draw_too_small_popup(frame, content_area, MIN_WIDTH, MIN_HEIGHT);
         } else {
@@ -217,6 +220,67 @@ impl App {
 
         let line = Line::from(spans);
         frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
+    }
+
+    fn draw_cache_state_banner(&self, frame: &mut Frame, area: Rect) {
+        use crate::data::cache::CacheLoad;
+        let t = theme();
+        let tick = self.start_time.elapsed().as_millis() / 400;
+
+        // Migration vs corruption get different colors, icons, and copy so
+        // the user can tell a planned schema bump apart from a cache that
+        // genuinely failed to load.
+        let (icon, accent, title_text, body_text) = match self.cache_load_state {
+            CacheLoad::Fresh => return,
+            CacheLoad::Migrated => (
+                if tick.is_multiple_of(2) {
+                    "\u{21bb}"
+                } else {
+                    "\u{2022}"
+                },
+                t.warning,
+                "Cache rebuilt",
+                "  —  duplicate sub-agent events are no longer counted; historical totals may shift",
+            ),
+            CacheLoad::Recovered => (
+                if tick.is_multiple_of(2) {
+                    "\u{26a0}"
+                } else {
+                    "\u{2022}"
+                },
+                t.error,
+                "Cache was unreadable",
+                "  —  rebuilt from scratch; if this keeps happening, delete ~/.config/ccmeter/history.json",
+            ),
+        };
+
+        let title = Line::from(vec![
+            Span::styled(
+                format!(" {icon}  "),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                title_text,
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(body_text, Style::default().fg(t.text_primary)),
+        ]);
+        let hint = Line::from(Span::styled(
+            "press any key to dismiss",
+            Style::default()
+                .fg(t.text_dim)
+                .add_modifier(Modifier::ITALIC),
+        ));
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(accent));
+
+        let paragraph = Paragraph::new(vec![title, hint])
+            .alignment(Alignment::Center)
+            .block(block);
+        frame.render_widget(paragraph, area);
     }
 
     fn draw_too_small_popup(&self, frame: &mut Frame, area: Rect, min_w: u16, min_h: u16) {
