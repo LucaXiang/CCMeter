@@ -17,8 +17,14 @@ use crate::app::{App, View};
 impl App {
     pub(crate) fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
+        const MIN_WIDTH: u16 = 50;
+        const MIN_HEIGHT: u16 = 30;
 
         if matches!(self.view, View::RateTracking) {
+            if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+                self.draw_too_small_popup(frame, area, MIN_WIDTH, MIN_HEIGHT);
+                return;
+            }
             let tick = (self.start_time.elapsed().as_millis() / 150) as usize;
             rate_tracking::render(
                 frame,
@@ -30,7 +36,7 @@ impl App {
                 Some(self.rate_tracking_selected),
                 &self.data.index,
                 &self.data.rate_history,
-                self.reloading,
+                self.is_busy(),
                 tick,
             );
             return;
@@ -87,8 +93,6 @@ impl App {
         }
 
         let content_area = outer[2];
-        const MIN_WIDTH: u16 = 50;
-        const MIN_HEIGHT: u16 = 30;
         if content_area.width < MIN_WIDTH || content_area.height < MIN_HEIGHT {
             self.draw_too_small_popup(frame, content_area, MIN_WIDTH, MIN_HEIGHT);
         } else {
@@ -113,20 +117,17 @@ impl App {
             return;
         }
         let t = theme();
-        let footer_text = if self.reloading {
+        let busy = self.is_busy();
+        let footer_text = if busy {
             "⟳ Reloading…"
         } else if self.project_index.is_some() {
-            "Esc Back   Tab Period   ←→ Project   r Reload   ` Rate tracking   q Quit"
+            "Esc Back   Tab Period   ←→ Project   r Refresh   ` Rate tracking   q Quit"
         } else {
-            "Tab Period   ⇧Tab Source   ←→ Project   ↑↓ Scroll   r Reload   ` Rate tracking   . Settings   q Quit"
+            "Tab Period   ⇧Tab Source   ←→ Project   ↑↓ Scroll   r Refresh   ` Rate tracking   . Settings   q Quit"
         };
         let footer = Paragraph::new(Span::styled(
             footer_text,
-            Style::default().fg(if self.reloading {
-                t.warning
-            } else {
-                t.text_dim
-            }),
+            Style::default().fg(if busy { t.warning } else { t.text_dim }),
         ))
         .alignment(Alignment::Center);
         frame.render_widget(footer, area);

@@ -3,15 +3,46 @@ use std::path::PathBuf;
 use chrono::{NaiveDate, Timelike};
 use serde::{Deserialize, Serialize};
 
+use super::models::PerModelUsage;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateHistoryEntry {
     pub date: NaiveDate,
     pub resets_at: String,
+    /// Total tokens (input + output) extrapolated to 100% saturation of the
+    /// 5h window. Used as the extrapolation target at render time.
     pub estimated_tokens: u64,
     pub source_root: String,
     /// Pre-bucketed hour key for dedup (e.g. "2026-04-08T15").
-    #[serde(default)]
     pub bucket: String,
+    /// Actual per-model usage observed over the session window at record
+    /// time. Sum of `total_tokens` across this vec is the unscaled basis;
+    /// `estimated_tokens / sum(total_tokens)` gives the extrapolation scale.
+    #[serde(default)]
+    pub per_model: Vec<PerModelUsage>,
+}
+
+impl RateHistoryEntry {
+    /// Derive the UTC session-start from `resets_at - 5h`.
+    /// Returns `None` if `resets_at` can't be parsed.
+    pub fn session_start_utc(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        chrono::DateTime::parse_from_rfc3339(&self.resets_at)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc) - chrono::Duration::hours(5))
+    }
+
+    /// Session-start in local time.
+    pub fn session_start_local(&self) -> Option<chrono::NaiveDateTime> {
+        self.session_start_utc()
+            .map(|utc| utc.with_timezone(&chrono::Local).naive_local())
+    }
+
+    /// Session-end (= resets_at) in local time.
+    pub fn session_end_local(&self) -> Option<chrono::NaiveDateTime> {
+        chrono::DateTime::parse_from_rfc3339(&self.resets_at)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).naive_local())
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -38,13 +69,6 @@ pub fn load() -> RateHistory {
 
     let cutoff = chrono::Utc::now().date_naive() - chrono::Duration::days(90);
     history.entries.retain(|e| e.date >= cutoff);
-
-    // Backfill bucket field for entries saved before this field existed.
-    for entry in &mut history.entries {
-        if entry.bucket.is_empty() {
-            entry.bucket = bucket_resets_at(&entry.resets_at);
-        }
-    }
 
     history
 }
@@ -85,6 +109,7 @@ impl RateHistory {
         source_root: &str,
         resets_at: &str,
         estimated_tokens: u64,
+        per_model: Vec<PerModelUsage>,
         date: NaiveDate,
     ) {
         let bucket = bucket_resets_at(resets_at);
@@ -94,6 +119,7 @@ impl RateHistory {
             .find(|e| e.source_root == source_root && e.bucket == bucket)
         {
             existing.estimated_tokens = estimated_tokens;
+            existing.per_model = per_model;
             existing.resets_at = resets_at.to_string();
             existing.date = date;
         } else {
@@ -103,6 +129,7 @@ impl RateHistory {
                 estimated_tokens,
                 source_root: source_root.to_string(),
                 bucket,
+                per_model,
             });
         }
     }
