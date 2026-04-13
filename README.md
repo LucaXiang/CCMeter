@@ -45,7 +45,7 @@ CCMeter reads your local Claude Code session data and renders an interactive TUI
 - **Per-project detail** — dedicated charts, model distribution, cost sparklines, and estimated active time
 - **Time filters** — 1h, 12h, Today, Last week, Last month, All
 
-**Rate limit tracking** (press `` ` `` to toggle)
+**Rate limit tracking** (press `t` to toggle)
 - **Live usage monitor** — polls `/api/oauth/usage` for each Claude OAuth account and shows 5h, 7d, Opus, Sonnet, and Cowork window utilization in real time
 - **Credential cards** — one per source root with subscription tier, expiry, and current usage bars
 - **Session forecast** — extrapolates when you'll hit each rate limit window based on current token velocity
@@ -102,7 +102,7 @@ ccmeter
 |-----|--------|
 | `Tab` | Cycle time filter |
 | `Shift+Tab` | Switch source root |
-| `` ` `` | Toggle rate limit tracking view |
+| `t` (or `` ` ``) | Toggle rate limit tracking view |
 | `j` / `k` or `Up` / `Down` | Scroll projects |
 | `h` / `l` or `Left` / `Right` | Navigate between projects (or credentials in rate tracking) |
 | `Esc` | Deselect project |
@@ -161,7 +161,7 @@ Press `Esc` to go back to the global overview.
 
 ### Rate limit tracking
 
-Press `` ` `` (backtick) to switch to the rate limit tracking view. CCMeter reads your Claude OAuth credentials and polls `/api/oauth/usage` at randomized intervals (5–10 min per account) to show real-time utilization of each rate limit window.
+Press `t` (or `` ` ``) to switch to the rate limit tracking view. CCMeter reads your Claude OAuth credentials and polls `/api/oauth/usage` at randomized intervals (5–10 min per account) to show real-time utilization of each rate limit window.
 
 - **Credential cards** — one per source root, with subscription tier, token expiry, and usage bars for the 5h, 7d, Opus, Sonnet, and Cowork windows
 - **Live summary & KPI bar** — currently selected account's status at a glance
@@ -169,7 +169,7 @@ Press `` ` `` (backtick) to switch to the rate limit tracking view. CCMeter read
 - **Usage timeline & session chart** — minute-level token usage for the active 5h window and historical rate-limit hits per source
 - **Overages** — surfaces `extra_usage` credits and monthly limits when enabled on your plan
 
-Navigate between accounts with `←` / `→` (or `h` / `l`), refresh with `r`, and press `` ` `` again to return to the main dashboard.
+Navigate between accounts with `←` / `→` (or `h` / `l`), refresh with `r`, and press `t` again to return to the main dashboard.
 
 CCMeter only sees tokens from Claude Code sessions (local JSONL logs). Tokens consumed through the Claude chat (claude.ai web/desktop) count against the same rate limits but are not visible to CCMeter, so forecasts and utilization bars may under-report actual usage when you also chat with Claude alongside coding. Rate limit history is persisted locally at `~/.config/ccmeter/rate-history.json` and `~/.config/ccmeter/usage-hit-history.json` so session charts and hit timelines survive restarts — delete these files to reset the tracking history.
 

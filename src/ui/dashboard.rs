@@ -124,9 +124,9 @@ impl App {
         let footer_text = if busy {
             "⟳ Reloading…"
         } else if self.project_index.is_some() {
-            "Esc Back   Tab Period   ←→ Project   r Refresh   ` Rate tracking   q Quit"
+            "Esc Back   Tab Period   ←→ Project   r Refresh   t Rate tracking   q Quit"
         } else {
-            "Tab Period   ⇧Tab Source   ←→ Project   ↑↓ Scroll   r Refresh   ` Rate tracking   . Settings   q Quit"
+            "Tab Period   ⇧Tab Source   ←→ Project   ↑↓ Scroll   r Refresh   t Rate tracking   . Settings   q Quit"
         };
         let footer = Paragraph::new(Span::styled(
             footer_text,

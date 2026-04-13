@@ -635,7 +635,7 @@ impl App {
 
         match &mut self.view {
             View::RateTracking => match key.code {
-                KeyCode::Char('`') => {
+                KeyCode::Char('`') | KeyCode::Char('t') => {
                     self.switch_view(View::Main);
                 }
                 KeyCode::Char('q') => return false,
@@ -663,7 +663,7 @@ impl App {
                     self.recompute_tokens();
                 }
                 KeyCode::Char('q') => return false,
-                KeyCode::Char('`') => {
+                KeyCode::Char('`') | KeyCode::Char('t') => {
                     self.switch_view(View::RateTracking);
                 }
                 KeyCode::Char('r') if !self.is_busy() => {

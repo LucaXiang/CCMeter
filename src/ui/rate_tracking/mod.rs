@@ -153,7 +153,7 @@ fn render_footer(frame: &mut Frame, area: Rect, reloading: bool) {
             .alignment(Alignment::Center);
         frame.render_widget(footer, area);
     } else {
-        let text = "←→ Select source   r Refresh   ` Dashboard   q Quit";
+        let text = "←→ Select source   r Refresh   t Dashboard   q Quit";
         let footer = Paragraph::new(Span::styled(text, Style::default().fg(t.text_dim)))
             .alignment(Alignment::Center);
         frame.render_widget(footer, area);
