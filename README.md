@@ -45,6 +45,13 @@ CCMeter reads your local Claude Code session data and renders an interactive TUI
 - **Per-project detail** — dedicated charts, model distribution, cost sparklines, and estimated active time
 - **Time filters** — 1h, 12h, Today, Last week, Last month, All
 
+**Rate limit tracking** (press `` ` `` to toggle)
+- **Live usage monitor** — polls `/api/oauth/usage` for each Claude OAuth account and shows 5h, 7d, Opus, Sonnet, and Cowork window utilization in real time
+- **Credential cards** — one per source root with subscription tier, expiry, and current usage bars
+- **Session forecast** — extrapolates when you'll hit each rate limit window based on current token velocity
+- **Session chart & timeline** — historical rate-limit hits per source, plus minute-level token usage over the active window
+- **Overage tracking** — surfaces `extra_usage` credits and monthly limits when enabled
+
 **Project handling & performance**
 - **Auto-discovery & grouping** — finds Claude projects and groups them by git repository
 - **Multi-source roots** — switch between Claude config directories with `Shift+Tab`
@@ -95,8 +102,9 @@ ccmeter
 |-----|--------|
 | `Tab` | Cycle time filter |
 | `Shift+Tab` | Switch source root |
+| `` ` `` | Toggle rate limit tracking view |
 | `j` / `k` or `Up` / `Down` | Scroll projects |
-| `h` / `l` or `Left` / `Right` | Navigate between projects |
+| `h` / `l` or `Left` / `Right` | Navigate between projects (or credentials in rate tracking) |
 | `Esc` | Deselect project |
 | `.` | Open settings panel |
 | `r` | Reload data |
@@ -139,6 +147,24 @@ Press `Esc` to go back to the global overview.
   <img src="assets/project.png" alt="CCMeter per-project view" />
 </p>
 
+### Rate limit tracking
+
+Press `` ` `` (backtick) to switch to the rate limit tracking view. CCMeter reads your Claude OAuth credentials and polls `/api/oauth/usage` at randomized intervals (5–10 min per account) to show real-time utilization of each rate limit window.
+
+- **Credential cards** — one per source root, with subscription tier, token expiry, and usage bars for the 5h, 7d, Opus, Sonnet, and Cowork windows
+- **Live summary & KPI bar** — currently selected account's status at a glance
+- **Session forecast** — projects when you'll hit each limit based on recent token velocity
+- **Usage timeline & session chart** — minute-level token usage for the active 5h window and historical rate-limit hits per source
+- **Overages** — surfaces `extra_usage` credits and monthly limits when enabled on your plan
+
+Navigate between accounts with `←` / `→` (or `h` / `l`), refresh with `r`, and press `` ` `` again to return to the main dashboard.
+
+CCMeter only sees tokens from Claude Code sessions (local JSONL logs). Tokens consumed through the Claude chat (claude.ai web/desktop) count against the same rate limits but are not visible to CCMeter, so forecasts and utilization bars may under-report actual usage when you also chat with Claude alongside coding. Rate limit history is persisted locally at `~/.config/ccmeter/rate-history.json` and `~/.config/ccmeter/usage-hit-history.json` so session charts and hit timelines survive restarts — delete these files to reset the tracking history.
+
+<p align="center">
+  <img src="assets/rate-tracking.png" alt="CCMeter rate limit tracking view" />
+</p>
+
 ## Configuration
 
 User overrides are stored at `~/.config/ccmeter/overrides.json` and can be edited through the settings panel or manually.
@@ -160,28 +186,31 @@ User overrides are stored at `~/.config/ccmeter/overrides.json` and can be edite
 ```
 src/
 ├── main.rs               # Entry point & event loop
-├── app.rs                # Core application state
+├── app.rs                # Core application state & view routing
+├── update_check.rs       # GitHub release version check
 ├── config/
-│   ├── mod.rs
 │   ├── discovery.rs      # Project auto-discovery
-│   └── overrides.rs      # User configuration & merges
+│   ├── overrides.rs      # User configuration & merges
+│   └── settings.rs       # Persistent user preferences
 ├── data/
-│   ├── mod.rs
 │   ├── parser.rs         # JSONL session parsing
 │   ├── cache.rs          # Persistent metric cache
+│   ├── index.rs          # Compact event index
 │   ├── tokens.rs         # Daily token aggregation
-│   └── models.rs         # Model pricing tables
+│   ├── models.rs         # Model pricing tables
+│   ├── oauth.rs          # OAuth credential loading & async usage polling
+│   ├── rate_limits.rs    # Rate-limit hit parsing
+│   ├── rate_history.rs   # Persisted rate-limit history
+│   └── hit_history.rs    # Historical hit aggregation
 └── ui/
-    ├── mod.rs
     ├── dashboard.rs      # Main layout
     ├── heatmap.rs        # Heatmap rendering
+    ├── loading.rs        # Startup loading screen
     ├── theme.rs          # Color theme
     ├── time_filter.rs    # Time range logic
     ├── settings_view.rs  # Settings panel
-    └── cards/
-        ├── mod.rs
-        ├── data.rs       # Card data aggregation
-        └── render.rs     # Card rendering
+    ├── cards/            # Per-project cards
+    └── rate_tracking/    # Rate limit tracking view (13 modules)
 ```
 
 ## License
