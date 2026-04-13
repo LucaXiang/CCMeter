@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.0-beta.4] - 2026-04-13
+
+### Changed
+- `t` is now the primary shortcut to toggle the rate limit tracking view (backtick `` ` `` still works as an alias). Easier to reach on non-US keyboard layouts.
+
 ## [2.0.0-beta.3] - 2026-04-13
 
 ### Fixed
