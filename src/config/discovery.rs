@@ -122,36 +122,45 @@ fn discover_sources() -> Vec<ProjectSource> {
     let mut sources = Vec::new();
 
     for root in &roots {
-        if let Ok(entries) = std::fs::read_dir(root) {
-            for entry in entries.filter_map(Result::ok) {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect();
+        paths.sort();
 
-                let dir_name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
+        for path in paths {
+            let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
 
-                let session_files = collect_jsonl_files_recursive(&path);
-                if session_files.is_empty() {
-                    continue;
-                }
-
-                let cwd = extract_cwd_from_first_session(&session_files);
-
-                sources.push(ProjectSource {
-                    dir_name,
-                    path,
-                    session_files,
-                    cwd,
-                    source_root: root.clone(),
-                });
+            let session_files = collect_jsonl_files_recursive(&path);
+            if session_files.is_empty() {
+                continue;
             }
+
+            let cwd = extract_cwd_from_first_session(&session_files);
+
+            sources.push(ProjectSource {
+                dir_name,
+                path,
+                session_files,
+                cwd,
+                source_root: root.clone(),
+            });
         }
     }
 
+    sources.sort_by(|a, b| {
+        a.source_root
+            .cmp(&b.source_root)
+            .then_with(|| a.cwd.cmp(&b.cwd))
+            .then_with(|| a.path.cmp(&b.path))
+    });
     sources
 }
 
@@ -169,8 +178,15 @@ fn find_project_roots(home: &Path) -> Vec<PathBuf> {
     }
 
     if let Ok(entries) = std::fs::read_dir(home) {
-        for entry in entries.filter_map(Result::ok) {
-            let name = entry.file_name();
+        let mut home_entries: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
+        home_entries.sort();
+        for entry_path in home_entries {
+            let Some(name) = entry_path.file_name() else {
+                continue;
+            };
             let name_str = name.to_string_lossy();
 
             if !name_str.starts_with('.') || !name_str.contains("claude") {
@@ -180,13 +196,14 @@ fn find_project_roots(home: &Path) -> Vec<PathBuf> {
                 continue;
             }
 
-            let projects_dir = entry.path().join("projects");
+            let projects_dir = entry_path.join("projects");
             if projects_dir.is_dir() && !roots.contains(&projects_dir) {
                 roots.push(projects_dir);
             }
         }
     }
 
+    roots.sort();
     roots
 }
 

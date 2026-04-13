@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.0.0-beta.4] - 2026-04-13
+
+### Changed
+- `t` is now the primary shortcut to toggle the rate limit tracking view (backtick `` ` `` still works as an alias). Easier to reach on non-US keyboard layouts.
+
+## [2.0.0-beta.3] - 2026-04-13
+
+### Fixed
+- **Token & cost accuracy** — Claude Code logs the same API response in multiple places (streaming chunks, sub-agent mirrors, `/compact` retries). CCMeter now dedupes by `requestId` (Anthropic's billing unit), eliminating the 2–3× over-counting previously observed on days with heavy sub-agent activity. Totals now match what Anthropic actually billed.
+- **Multi-minute timeline accuracy** — long streaming responses (extended thinking + large outputs) now correctly distribute their tokens across the minutes they actually spanned, instead of collapsing onto the final completion minute. `active_minutes` clustering, the minute-level heatmap, and rate-limit forecasts are all more accurate.
+- **Code metrics on partial-overlap streams** — when a non-canonical stream carries a unique `Edit`/`Write` block, its `lines_suggested` / `lines_added` / `lines_deleted` are preserved via zero-billing ghost markers, avoiding silent under-counting of code activity. Ghosts are deduped across multiple mirror files by timestamp so a 3-file (canonical + 2 mirrors) layout doesn't double-count line metrics.
+- **Ghost events no longer leak into model breakdowns** — zero-billing markers now carry an empty `model` field, so they fall through to `ModelId::Other` and are filtered out of model-share aggregations instead of producing phantom slices.
+- **User-side patch dedup** — patches replayed into sub-agent transcripts (Edit/Write acceptances) are now deduped by line `uuid`, fixing inflated `lines_added` and skewed efficiency scores on sub-agent–heavy days.
+- **Cost fallback includes `cache_creation`** — token-based cost estimation (used when raw `costUSD` is absent, i.e. Pro plans) now bills `cache_creation` at `input_price × 1.25` instead of ignoring it. Closes a 5–15 % under-estimate on cache-heavy sessions.
+
+### Added
+- **Versioned cache schema** with automatic invalidation. `~/.config/ccmeter/history.json` carries a `schema_version`; mismatches trigger a clean rebuild on next launch so accuracy fixes propagate without manual intervention.
+- **One-time cache-state banner** at the top of the dashboard:
+  - "Cache rebuilt" (warning color) when a schema migration occurs.
+  - "Cache was unreadable" (error color) when the on-disk file couldn't be read or parsed, with a hint to delete it if the issue persists.
+  - Both dismiss on any keypress.
+- **`CCMETER_FORCE_BANNER` env var** for testing the banners after migration has already happened. Set to `recovered` for the corruption banner, anything else for the migration banner.
+
+### Documentation
+- README: new "Accurate token counting" section explaining the dedup methodology and what users should expect when upgrading from a pre-dedup version.
+
+## [2.0.0-beta.2] - 2026-04-13
+
+### Added
+- Async discovery refresh with non-blocking state management for smoother UI updates
+
+### Changed
+- Modularize rate tracking UI into 13 focused component modules for better maintainability
+- Restructure data models and handlers for usage tracking
+- Improve discovery configuration and error handling
+- Update dashboard styling to align with new rate tracking components
+
+## [2.0.0-beta.1] - 2026-04-09
+
+### Added
+- Rate limit tracking view with real-time usage monitoring for Claude OAuth accounts
+
 ## [1.4.1] - 2026-04-09
 
 ### Added

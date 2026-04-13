@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, Timelike};
 
-use super::models::normalize_model;
+use super::models::{OUTPUT_COST_WEIGHT, PerModelUsage, normalize_model};
 use super::parser::Event;
 use super::tokens::MinuteTokens;
 
@@ -43,11 +43,17 @@ impl ModelId {
 // Compact pre-aggregated entry
 // ---------------------------------------------------------------------------
 
-/// One record per unique (root, cwd, model, date, minute) combination.
+/// One record per unique (root, cwd, model_idx, date, minute) combination.
+///
+/// `model_idx` points into `EventIndex::models` for the full model string
+/// (e.g. "claude-opus-4-6-...") so per-entry pricing stays precise. `model`
+/// is the coarse family (Opus/Sonnet/Haiku/Other) derived from that string
+/// for legacy aggregation paths.
 #[derive(Debug, Clone)]
 pub struct CompactEntry {
     pub root_idx: u16,
     pub cwd_idx: u16,
+    pub model_idx: u16,
     pub model: ModelId,
     pub date: NaiveDate,
     pub minute: u16,
@@ -84,6 +90,7 @@ pub struct ModelStats {
 pub struct EventIndex {
     roots: Vec<String>,
     cwds: Vec<String>,
+    models: Vec<String>,
     root_intern: HashMap<String, u16>,
     cwd_intern: HashMap<String, u16>,
     entries: Vec<CompactEntry>,
@@ -95,11 +102,13 @@ impl EventIndex {
     pub fn build(events: &[Event], session_info: &HashMap<String, (String, String)>) -> Self {
         let mut root_intern: HashMap<String, u16> = HashMap::new();
         let mut cwd_intern: HashMap<String, u16> = HashMap::new();
+        let mut model_intern: HashMap<String, u16> = HashMap::new();
         let mut roots: Vec<String> = Vec::new();
         let mut cwds: Vec<String> = Vec::new();
+        let mut models: Vec<String> = Vec::new();
 
         // Aggregate into a HashMap first, then flatten.
-        type Key = (u16, u16, ModelId, NaiveDate, u16);
+        type Key = (u16, u16, u16, NaiveDate, u16);
         #[derive(Default)]
         struct Acc {
             input: u64,
@@ -131,18 +140,17 @@ impl EventIndex {
                 cwds.push(cwd.clone());
                 idx
             });
-
-            let model = if ev.model.is_empty() {
-                ModelId::Other
-            } else {
-                ModelId::from_raw(&ev.model)
-            };
+            let model_idx = *model_intern.entry(ev.model.clone()).or_insert_with(|| {
+                let idx = models.len() as u16;
+                models.push(ev.model.clone());
+                idx
+            });
 
             let local = ev.timestamp.with_timezone(&chrono::Local);
             let date = local.date_naive();
             let minute = local.hour() as u16 * 60 + local.minute() as u16;
 
-            let key = (root_idx, cwd_idx, model, date, minute);
+            let key = (root_idx, cwd_idx, model_idx, date, minute);
             let acc = agg.entry(key).or_default();
             acc.input += ev.input_tokens;
             acc.output += ev.output_tokens;
@@ -157,10 +165,17 @@ impl EventIndex {
 
         let entries: Vec<CompactEntry> = agg
             .into_iter()
-            .map(
-                |((root_idx, cwd_idx, model, date, minute), a)| CompactEntry {
+            .map(|((root_idx, cwd_idx, model_idx, date, minute), a)| {
+                let model_str = &models[model_idx as usize];
+                let model = if model_str.is_empty() {
+                    ModelId::Other
+                } else {
+                    ModelId::from_raw(model_str)
+                };
+                CompactEntry {
                     root_idx,
                     cwd_idx,
+                    model_idx,
                     model,
                     date,
                     minute,
@@ -173,13 +188,14 @@ impl EventIndex {
                     lines_suggested: a.lines_suggested,
                     lines_added: a.lines_added,
                     lines_deleted: a.lines_deleted,
-                },
-            )
+                }
+            })
             .collect();
 
         EventIndex {
             roots,
             cwds,
+            models,
             root_intern,
             cwd_intern,
             entries,
@@ -395,6 +411,213 @@ impl EventIndex {
         }
 
         cache
+    }
+
+    // ------------------------------------------------------------------
+    // Token window query
+    // ------------------------------------------------------------------
+
+    /// Sum (input + output) tokens within a local time window for a given source root.
+    pub fn tokens_in_window(
+        &self,
+        source_root: &str,
+        start_local: chrono::NaiveDateTime,
+        end_local: chrono::NaiveDateTime,
+    ) -> u64 {
+        let (inp, out) = self.tokens_in_window_split(source_root, start_local, end_local);
+        inp + out
+    }
+
+    /// Return (input, output) tokens within a local time window for a given source root.
+    pub fn tokens_in_window_split(
+        &self,
+        source_root: &str,
+        start_local: chrono::NaiveDateTime,
+        end_local: chrono::NaiveDateTime,
+    ) -> (u64, u64) {
+        let Some(&root_idx) = self.root_intern.get(source_root) else {
+            return (0, 0);
+        };
+        let start_date = start_local.date();
+        let end_date = end_local.date();
+        let start_min = start_local.hour() as u16 * 60 + start_local.minute() as u16;
+        let end_min = end_local.hour() as u16 * 60 + end_local.minute() as u16;
+
+        let mut total_in = 0u64;
+        let mut total_out = 0u64;
+        for e in &self.entries {
+            if e.root_idx != root_idx {
+                continue;
+            }
+            if e.date < start_date || e.date > end_date {
+                continue;
+            }
+            if start_date == end_date {
+                if e.minute < start_min || e.minute > end_min {
+                    continue;
+                }
+            } else if e.date == start_date {
+                if e.minute < start_min {
+                    continue;
+                }
+            } else if e.date == end_date && e.minute > end_min {
+                continue;
+            }
+            total_in += e.input_tokens;
+            total_out += e.output_tokens;
+        }
+        (total_in, total_out)
+    }
+
+    /// Split a single entry's pre-computed cost into
+    /// (input_side_cost, cache_read_cost, output_cost).
+    ///
+    /// Across every model in the pricing table the ratios are constant
+    /// (output = 5× input, cache_read = 1/10 input), so the *share* of cost
+    /// going to each side depends only on the token mix — not on which
+    /// model produced the entry. We compute those shares with universal
+    /// weights, then split the per-entry real USD cost accordingly.
+    ///
+    /// `cache_creation` is grouped with fresh input: semantically it's
+    /// data the user sent to the model (just destined for the cache), and
+    /// Anthropic bills it at the input rate (×1.25 for the default 5-min
+    /// TTL). Without this grouping the input slice is dominated by the
+    /// raw `input_tokens` API field — which is typically just the latest
+    /// user-message delta (~50 tokens) and barely visible.
+    fn split_entry_cost(e: &CompactEntry) -> (f64, f64, f64) {
+        // Universal cost weights (relative units, per token):
+        //   fresh input    = 1
+        //   cache_creation = 1.25 (5-min ephemeral TTL, Claude Code default)
+        //   cache_read     = 0.1
+        //   output         = OUTPUT_COST_WEIGHT (= 5)
+        const CACHE_CREATION_WEIGHT: f64 = 1.25;
+        let input_units = e.input_tokens as f64 + e.cache_creation as f64 * CACHE_CREATION_WEIGHT;
+        let cache_units = e.cache_read as f64 * 0.1;
+        let output_units = e.output_tokens as f64 * OUTPUT_COST_WEIGHT;
+        let total_units = input_units + cache_units + output_units;
+        if total_units <= 0.0 || e.cost <= 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let input_cost = e.cost * input_units / total_units;
+        let cache_cost = e.cost * cache_units / total_units;
+        let output_cost = e.cost - input_cost - cache_cost;
+        (input_cost, cache_cost, output_cost)
+    }
+
+    /// Sum `(fresh_input_cost, cache_read_cost, output_cost)` within a
+    /// local time window for a given source root.
+    pub fn cost_in_window_split(
+        &self,
+        source_root: &str,
+        start_local: chrono::NaiveDateTime,
+        end_local: chrono::NaiveDateTime,
+    ) -> (f64, f64, f64) {
+        let Some(&root_idx) = self.root_intern.get(source_root) else {
+            return (0.0, 0.0, 0.0);
+        };
+        let start_date = start_local.date();
+        let end_date = end_local.date();
+        let start_min = start_local.hour() as u16 * 60 + start_local.minute() as u16;
+        let end_min = end_local.hour() as u16 * 60 + end_local.minute() as u16;
+
+        let mut fresh_total = 0.0_f64;
+        let mut cache_total = 0.0_f64;
+        let mut out_total = 0.0_f64;
+        for e in &self.entries {
+            if e.root_idx != root_idx {
+                continue;
+            }
+            if e.date < start_date || e.date > end_date {
+                continue;
+            }
+            if start_date == end_date {
+                if e.minute < start_min || e.minute > end_min {
+                    continue;
+                }
+            } else if e.date == start_date {
+                if e.minute < start_min {
+                    continue;
+                }
+            } else if e.date == end_date && e.minute > end_min {
+                continue;
+            }
+            let (f, c, o) = Self::split_entry_cost(e);
+            fresh_total += f;
+            cache_total += c;
+            out_total += o;
+        }
+        (fresh_total, cache_total, out_total)
+    }
+
+    /// Build a per-model usage breakdown (tokens + cost split) within a
+    /// local time window for a given source root. Entries with an empty
+    /// model string (user-side events: lines_accepted, etc.) are skipped.
+    pub fn per_model_breakdown_in_window(
+        &self,
+        source_root: &str,
+        start_local: chrono::NaiveDateTime,
+        end_local: chrono::NaiveDateTime,
+    ) -> Vec<PerModelUsage> {
+        let Some(&root_idx) = self.root_intern.get(source_root) else {
+            return Vec::new();
+        };
+        let start_date = start_local.date();
+        let end_date = end_local.date();
+        let start_min = start_local.hour() as u16 * 60 + start_local.minute() as u16;
+        let end_min = end_local.hour() as u16 * 60 + end_local.minute() as u16;
+
+        let mut agg: HashMap<u16, PerModelUsage> = HashMap::new();
+        for e in &self.entries {
+            if e.root_idx != root_idx {
+                continue;
+            }
+            if e.date < start_date || e.date > end_date {
+                continue;
+            }
+            if start_date == end_date {
+                if e.minute < start_min || e.minute > end_min {
+                    continue;
+                }
+            } else if e.date == start_date {
+                if e.minute < start_min {
+                    continue;
+                }
+            } else if e.date == end_date && e.minute > end_min {
+                continue;
+            }
+            let model_str = &self.models[e.model_idx as usize];
+            if model_str.is_empty() {
+                continue;
+            }
+            let (in_c, cache_c, out_c) = Self::split_entry_cost(e);
+            let slot = agg.entry(e.model_idx).or_insert_with(|| PerModelUsage {
+                model: model_str.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                input_cost: 0.0,
+                cache_cost: 0.0,
+                output_cost: 0.0,
+            });
+            slot.input_tokens += e.input_tokens;
+            slot.output_tokens += e.output_tokens;
+            slot.cache_read_tokens += e.cache_read;
+            slot.cache_creation_tokens += e.cache_creation;
+            slot.input_cost += in_c;
+            slot.cache_cost += cache_c;
+            slot.output_cost += out_c;
+        }
+        let mut result: Vec<PerModelUsage> = agg
+            .into_values()
+            .filter(|m| m.total_tokens() > 0 || m.total_cost() > 0.0)
+            .collect();
+        result.sort_by(|a, b| {
+            b.total_cost()
+                .partial_cmp(&a.total_cost())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        result
     }
 
     // ------------------------------------------------------------------
