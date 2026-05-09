@@ -2,7 +2,7 @@
 name = "ccmeter"
 version = "2.0.0"
 edition = "2024"
-description = "A meter for Claude Code usage"
+description = "A meter for Claude Code and Codex usage"
 repository = "https://github.com/hmenzagh/CCMeter"
 license = "MIT"
 

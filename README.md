@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>A terminal dashboard for Claude Code usage analytics</strong><br/>
+  <strong>A terminal dashboard for Claude Code and Codex usage analytics</strong><br/>
   Track tokens, costs, code generation, and efficiency, all from your terminal.
 </p>
 
@@ -29,12 +29,12 @@ ccmeter          # launch the dashboard
 
 ## Overview
 
-CCMeter reads your local Claude Code session data and renders an interactive TUI dashboard. Data refreshes every 5 minutes (manual reload with `r`).
+CCMeter reads your local Claude Code and Codex session data and renders an interactive TUI dashboard. Data refreshes every 5 minutes (manual reload with `r`).
 
 **Metrics & analytics**
-- **Cost tracking** — per-model USD breakdown (Opus, Sonnet, Haiku) via built-in pricing tables
+- **Cost tracking** — per-model USD breakdown for Claude and OpenAI models; Codex costs are shown as estimates from the local pricing table
 - **Token analytics** — input, output, and prompt cache usage over time
-- **Code metrics** — lines suggested, accepted, added, and deleted, with acceptance rate
+- **Code metrics** — lines suggested, accepted, added, and deleted, including Codex `apply_patch` changes, with acceptance rate
 - **Active time estimation** — approximates how long you actually spent working on each project from session activity
 - **Efficiency score** — tokens per line of code changed (tok/ln, lower is better); each card has a quartile gauge (green → yellow → red) comparing it to other projects
 - **KPI banner** — total cost, current streak, active days, avg tokens/day, and efficiency score at a glance
@@ -46,14 +46,14 @@ CCMeter reads your local Claude Code session data and renders an interactive TUI
 - **Time filters** — 1h, 12h, Today, Last week, Last month, All
 
 **Rate limit tracking** (press `t` to toggle)
-- **Live usage monitor** — polls `/api/oauth/usage` for each Claude OAuth account and shows 5h, 7d, Opus, Sonnet, and Cowork window utilization in real time
+- **Live usage monitor** — polls `/api/oauth/usage` for each Claude OAuth account and reads local Codex rate-limit snapshots to show 5h and 7d utilization in real time
 - **Credential cards** — one per source root with subscription tier, expiry, and current usage bars
 - **Session forecast** — extrapolates when you'll hit each rate limit window based on current token velocity
 - **Session chart & timeline** — historical rate-limit hits per source, plus minute-level token usage over the active window
 - **Overage tracking** — surfaces `extra_usage` credits and monthly limits when enabled
 
 **Project handling & performance**
-- **Auto-discovery & grouping** — finds Claude projects and groups them by git repository
+- **Auto-discovery & grouping** — finds Claude projects and Codex workspaces, then groups them by git repository
 - **Multi-source roots** — switch between Claude config directories with `Shift+Tab`
 - **Persistent cache** — historical metrics cached locally for near-instant startup; only new sessions get parsed
 - **Responsive layout** — heatmaps and card grids adapt to terminal size
@@ -122,10 +122,10 @@ Press `.` to open the settings panel, where you can:
 
 ## How it works
 
-CCMeter discovers Claude Code sessions by scanning your home directory for any folder whose name contains `claude` and that has a `projects/` subdirectory with session logs (so `~/.claude/projects`, `~/.config/claude/projects`, and other Claude-compatible CLIs are all picked up automatically). It parses JSONL session files in parallel using [rayon](https://github.com/rayon-rs/rayon), extracts token counts and model identifiers, and computes costs from built-in pricing tables.
+CCMeter discovers Claude Code sessions by scanning your home directory for any folder whose name contains `claude` and that has a `projects/` subdirectory with session logs (so `~/.claude/projects`, `~/.config/claude/projects`, and other Claude-compatible CLIs are all picked up automatically). It also reads Codex rollouts from `~/.codex/sessions` and `~/.codex/archived_sessions`, grouped by the workspace `cwd` recorded in each rollout. It parses JSONL session files in parallel using [rayon](https://github.com/rayon-rs/rayon), extracts token counts and model identifiers, computes costs from built-in pricing tables, and counts Codex code changes from successful patch events.
 
 ```
-Session JSONL → parallel parse → daily aggregates → cached history → TUI render
+Session JSONL / Codex rollout JSONL → parallel parse → daily aggregates → cached history → TUI render
 ```
 
 ### Accurate token counting
@@ -134,7 +134,7 @@ Claude Code logs the same API response in several places — once per streaming 
 
 CCMeter dedupes by `requestId` (Anthropic's billing unit: one request = one invoice line). For each request it picks the most complete log, then re-emits it as per-chunk deltas so multi-minute streams keep their real timestamps. Activity from non-canonical mirror logs survives as zero-billing "ghost" markers, so `active_minutes` and code metrics stay accurate even when the canonical log is just a terminal snapshot. User-side patches (Edit/Write acceptances) are deduped by line `uuid` for the same reason.
 
-Result: totals match what Anthropic actually billed, and the minute-level timeline reflects real activity.
+Result: Claude totals match what Anthropic actually billed, Codex totals are token-based estimates, and the minute-level timeline reflects real activity.
 
 ### Cache
 
@@ -161,7 +161,7 @@ Press `Esc` to go back to the global overview.
 
 ### Rate limit tracking
 
-Press `t` (or `` ` ``) to switch to the rate limit tracking view. CCMeter reads your Claude OAuth credentials and polls `/api/oauth/usage` at randomized intervals (5–10 min per account) to show real-time utilization of each rate limit window.
+Press `t` (or `` ` ``) to switch to the rate limit tracking view. CCMeter reads your Claude OAuth credentials and polls `/api/oauth/usage` at randomized intervals (5–10 min per account) to show real-time utilization of each Claude rate limit window. Codex usage is read locally from the latest `token_count` snapshots in `~/.codex`, so the same view can show Codex 5h and 7d utilization without an OAuth call. Codex rate-limit hits are detected from explicit `rate_limit_reached_type` snapshots when present, or inferred when a local Codex window reaches 100%.
 
 - **Credential cards** — one per source root, with subscription tier, token expiry, and usage bars for the 5h, 7d, Opus, Sonnet, and Cowork windows
 - **Live summary & KPI bar** — currently selected account's status at a glance
@@ -171,7 +171,7 @@ Press `t` (or `` ` ``) to switch to the rate limit tracking view. CCMeter reads 
 
 Navigate between accounts with `←` / `→` (or `h` / `l`), refresh with `r`, and press `t` again to return to the main dashboard.
 
-CCMeter only sees tokens from Claude Code sessions (local JSONL logs). Tokens consumed through the Claude chat (claude.ai web/desktop) count against the same rate limits but are not visible to CCMeter, so forecasts and utilization bars may under-report actual usage when you also chat with Claude alongside coding. Rate limit history is persisted locally at `~/.config/ccmeter/rate-history.json` and `~/.config/ccmeter/usage-hit-history.json` so session charts and hit timelines survive restarts — delete these files to reset the tracking history.
+CCMeter only sees tokens from local Claude Code and Codex session logs. Tokens consumed through Claude chat or other OpenAI surfaces outside `~/.codex` can count against the same limits but are not visible to CCMeter, so forecasts and utilization bars may under-report actual usage when you also chat alongside coding. Rate limit history is persisted locally at `~/.config/ccmeter/rate-history.json` and `~/.config/ccmeter/usage-hit-history.json` so session charts and hit timelines survive restarts — delete these files to reset the tracking history.
 
 <p align="center">
   <img src="assets/rate-tracking.png" alt="CCMeter rate limit tracking view" />
