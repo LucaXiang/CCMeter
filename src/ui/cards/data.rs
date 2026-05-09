@@ -17,6 +17,7 @@ pub struct ProjectCard {
     pub last_activity: NaiveDate,
     pub first_activity: NaiveDate,
     pub total_cost: f64,
+    pub cost_is_estimated: bool,
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub tokens_cache: u64,
@@ -146,7 +147,21 @@ pub fn build_cards(
 
         let model_shares = compute_model_shares(&root_key, model_tokens);
 
-        let model_order = ["opus", "sonnet", "haiku", "other"];
+        let cost_is_estimated = model_shares
+            .iter()
+            .any(|(model, _)| model.starts_with("gpt-"));
+
+        let model_order = [
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "gpt-5.4",
+            "gpt-5-codex",
+            "gpt-5",
+            "opus",
+            "sonnet",
+            "haiku",
+            "other",
+        ];
         let mut model_daily_costs: Vec<(String, Vec<(NaiveDate, f64)>)> = Vec::new();
         for &model in &model_order {
             let key = (root_key.clone(), model.to_string());
@@ -169,6 +184,7 @@ pub fn build_cards(
             last_activity,
             first_activity,
             total_cost,
+            cost_is_estimated,
             tokens_in,
             tokens_out,
             tokens_cache,

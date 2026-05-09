@@ -15,6 +15,18 @@ const CARD_HEIGHT: u16 = 6;
 /// Cost per (project, model) bucketed by (date, minute of day).
 pub type MinuteModelCosts = HashMap<(String, String), HashMap<(NaiveDate, u16), f64>>;
 
+const MODEL_ORDER: [&str; 9] = [
+    "gpt-5.5",
+    "gpt-5.4-mini",
+    "gpt-5.4",
+    "gpt-5-codex",
+    "gpt-5",
+    "opus",
+    "sonnet",
+    "haiku",
+    "other",
+];
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -108,6 +120,37 @@ fn format_cost(cost: f64) -> String {
     } else {
         format!("${:.2}", cost)
     }
+}
+
+fn display_cost(card: &ProjectCard) -> String {
+    let cost = format_cost(card.total_cost);
+    if card.cost_is_estimated && card.total_cost > 0.0 {
+        format!("~{cost}")
+    } else {
+        cost
+    }
+}
+
+fn model_legend_spans() -> Vec<Span<'static>> {
+    let t = theme();
+    [
+        ("gpt-5.5", "5.5"),
+        ("gpt-5.4-mini", "5.4m"),
+        ("gpt-5.4", "5.4"),
+        ("gpt-5-codex", "codex"),
+        ("gpt-5", "5"),
+        ("opus", "opus"),
+        ("sonnet", "sonnet"),
+        ("haiku", "haiku"),
+    ]
+    .into_iter()
+    .flat_map(|(model, label)| {
+        [
+            Span::styled("■", Style::default().fg(t.model_color(model))),
+            Span::styled(format!(" {label} "), Style::default().fg(t.text_dim)),
+        ]
+    })
+    .collect()
 }
 
 /// Render sparkline with model colors overlaid.
@@ -240,14 +283,7 @@ pub fn render(
     let t = theme();
 
     // Model legend at top (1 line)
-    let legend_spans: Vec<Span> = vec![
-        Span::styled("■", Style::default().fg(t.model_color("opus"))),
-        Span::styled(" opus ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("sonnet"))),
-        Span::styled(" sonnet ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("haiku"))),
-        Span::styled(" haiku", Style::default().fg(t.text_dim)),
-    ];
+    let legend_spans = model_legend_spans();
     let legend = Paragraph::new(Line::from(legend_spans)).alignment(Alignment::Right);
     frame.render_widget(legend, Rect::new(area.x, area.y, area.width, 1));
 
@@ -372,7 +408,7 @@ fn render_card(
     let content_width = inner.width as usize;
 
     // Line 1: cost + time + efficiency with mini gauge
-    let cost_str = format_cost(card.total_cost);
+    let cost_str = display_cost(card);
     let time_str = if card.time_minutes > 0 {
         format!("⏱ {}", format_duration(card.time_minutes))
     } else {
@@ -942,7 +978,7 @@ fn render_detail_metrics(frame: &mut Frame, area: Rect, card: &ProjectCard) {
     let dim = Style::default().fg(t.text_dim);
     let bright = Style::default().fg(t.text_secondary);
 
-    let cost_str = format_cost(card.total_cost);
+    let cost_str = display_cost(card);
     let eff_str = if card.efficiency > 0.0 {
         format!("{:.0} tok/ln", card.efficiency)
     } else {
@@ -1114,24 +1150,20 @@ fn render_detail_charts(
 
     // Left chart: Cost stacked by model
     let cost_period_label = format!(" Cost{}", granularity.period_suffix());
-    let left_legend = Line::from(vec![
+    let mut left_legend_spans = vec![
         Span::styled(
             cost_period_label,
             Style::default()
                 .fg(t.text_secondary)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("■", Style::default().fg(t.model_color("opus"))),
-        Span::styled(" opus ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("sonnet"))),
-        Span::styled(" sonnet ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("haiku"))),
-        Span::styled(" haiku", Style::default().fg(t.text_dim)),
-    ]);
+        Span::raw(" "),
+    ];
+    left_legend_spans.extend(model_legend_spans());
+    let left_legend = Line::from(left_legend_spans);
     frame.render_widget(Paragraph::new(left_legend), left_split[0]);
 
     let chart_w_left = left_split[1].width.saturating_sub(7) as usize;
-    let model_order = ["opus", "sonnet", "haiku", "other"];
 
     let intraday_params = match granularity {
         DetailGranularity::Intraday {
@@ -1152,7 +1184,7 @@ fn render_detail_charts(
 
     let (model_series, left_x_labels) = match granularity {
         DetailGranularity::Daily => {
-            let series: Vec<(String, Vec<f64>)> = model_order
+            let series: Vec<(String, Vec<f64>)> = MODEL_ORDER
                 .iter()
                 .filter_map(|&name| {
                     card.model_daily_costs
@@ -1173,7 +1205,7 @@ fn render_detail_charts(
             let Some((today, start_minute, _, n_buckets)) = intraday_params else {
                 return;
             };
-            let series: Vec<(String, Vec<f64>)> = model_order
+            let series: Vec<(String, Vec<f64>)> = MODEL_ORDER
                 .iter()
                 .filter_map(|&name| {
                     let key = (card.root_key.clone(), name.to_string());

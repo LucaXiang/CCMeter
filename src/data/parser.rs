@@ -102,6 +102,45 @@ struct RawUsage {
 }
 
 #[derive(Deserialize)]
+struct RawCodexLine {
+    timestamp: Option<String>,
+    #[serde(rename = "type")]
+    line_type: Option<String>,
+    payload: Option<RawCodexPayload>,
+}
+
+#[derive(Deserialize)]
+struct RawCodexPayload {
+    #[serde(rename = "type")]
+    payload_type: Option<String>,
+    model: Option<String>,
+    info: Option<RawCodexInfo>,
+    name: Option<String>,
+    input: Option<String>,
+    call_id: Option<String>,
+    output: Option<String>,
+    success: Option<bool>,
+    changes: Option<HashMap<String, RawCodexPatchChange>>,
+}
+
+#[derive(Deserialize)]
+struct RawCodexInfo {
+    total_token_usage: Option<RawCodexUsage>,
+}
+
+#[derive(Deserialize)]
+struct RawCodexUsage {
+    input_tokens: Option<u64>,
+    cached_input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct RawCodexPatchChange {
+    unified_diff: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RawToolUseResult {
     #[serde(rename = "structuredPatch")]
     structured_patch: Option<Vec<RawPatchHunk>>,
@@ -401,12 +440,39 @@ fn parse_one_file(path: &Path) -> Option<Vec<Event>> {
         .to_string_lossy()
         .into_owned();
 
-    let events: Vec<Event> = reader
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| parse_line(&line, &session_file))
-        .collect();
+    let mut codex_model: Option<String> = None;
+    let mut pending_codex_patches: HashMap<String, Event> = HashMap::new();
+    let mut events = Vec::new();
+    for line in reader.lines().map_while(Result::ok) {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(model) = parse_codex_model(&line) {
+            codex_model = Some(model);
+        }
+        if let Some((call_id, event)) = parse_codex_patch_apply_end(&line, &session_file) {
+            pending_codex_patches.remove(&call_id);
+            if let Some(event) = event {
+                events.push(event);
+            }
+            continue;
+        }
+        if let Some((call_id, event)) = parse_codex_patch_call(&line, &session_file) {
+            pending_codex_patches.insert(call_id, event);
+            continue;
+        }
+        if let Some((call_id, success)) = parse_codex_tool_output(&line) {
+            if let Some(event) = pending_codex_patches.remove(&call_id)
+                && success
+            {
+                events.push(event);
+            }
+            continue;
+        }
+        if let Some(event) = parse_line_with_context(&line, &session_file, codex_model.as_deref()) {
+            events.push(event);
+        }
+    }
 
     Some(events)
 }
@@ -436,7 +502,20 @@ fn count_diff_lines(old: Option<&str>, new: Option<&str>) -> (u64, u64) {
 
 /// Try to extract an Event from a single JSON line.
 /// Handles both assistant messages (tokens + suggested lines) and user messages (accepted lines).
+#[cfg(test)]
 fn parse_line(line: &str, session_file: &str) -> Option<Event> {
+    parse_line_with_context(line, session_file, None)
+}
+
+fn parse_line_with_context(
+    line: &str,
+    session_file: &str,
+    codex_model: Option<&str>,
+) -> Option<Event> {
+    if let Some(event) = parse_codex_token_count(line, session_file, codex_model) {
+        return Some(event);
+    }
+
     let raw: RawLine = serde_json::from_str(line).ok()?;
 
     let ts_str = raw.timestamp?;
@@ -569,6 +648,225 @@ fn parse_line(line: &str, session_file: &str) -> Option<Event> {
     }
 }
 
+fn parse_codex_model(line: &str) -> Option<String> {
+    if !line.contains("\"turn_context\"") {
+        return None;
+    }
+
+    let raw: RawCodexLine = serde_json::from_str(line).ok()?;
+    if raw.line_type.as_deref() != Some("turn_context") {
+        return None;
+    }
+
+    raw.payload?.model.filter(|model| !model.trim().is_empty())
+}
+
+fn parse_codex_token_count(
+    line: &str,
+    session_file: &str,
+    codex_model: Option<&str>,
+) -> Option<Event> {
+    if !line.contains("\"token_count\"") {
+        return None;
+    }
+
+    let raw: RawCodexLine = serde_json::from_str(line).ok()?;
+    if raw.line_type.as_deref() != Some("event_msg") {
+        return None;
+    }
+    let payload = raw.payload?;
+    if payload.payload_type.as_deref() != Some("token_count") {
+        return None;
+    }
+
+    let ts_str = raw.timestamp?;
+    let timestamp = DateTime::parse_from_rfc3339(&ts_str)
+        .ok()?
+        .with_timezone(&Utc);
+    let usage = payload.info?.total_token_usage?;
+    let model = codex_model.unwrap_or("codex").to_string();
+    let input_tokens = usage.input_tokens.unwrap_or(0);
+    let output_tokens = usage.output_tokens.unwrap_or(0);
+    let cache_read = usage.cached_input_tokens.unwrap_or(0);
+
+    Some(Event {
+        timestamp,
+        model: model.clone(),
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens: cache_read,
+        cache_creation_input_tokens: 0,
+        cost_usd: cost_from_tokens(&model, input_tokens, output_tokens, cache_read, 0),
+        lines_suggested: 0,
+        lines_accepted: 0,
+        lines_added: 0,
+        lines_deleted: 0,
+        session_file: session_file.to_owned(),
+        request_id: Some(format!("codex-total:{session_file}")),
+        raw_cost_usd: None,
+        line_uuid: None,
+    })
+}
+
+fn parse_codex_patch_apply_end(line: &str, session_file: &str) -> Option<(String, Option<Event>)> {
+    if !line.contains("\"patch_apply_end\"") {
+        return None;
+    }
+
+    let raw: RawCodexLine = serde_json::from_str(line).ok()?;
+    if raw.line_type.as_deref() != Some("event_msg") {
+        return None;
+    }
+    let payload = raw.payload?;
+    if payload.payload_type.as_deref() != Some("patch_apply_end") {
+        return None;
+    }
+
+    let call_id = payload.call_id?;
+    if payload.success != Some(true) {
+        return Some((call_id, None));
+    }
+
+    let ts_str = raw.timestamp?;
+    let timestamp = DateTime::parse_from_rfc3339(&ts_str)
+        .ok()?
+        .with_timezone(&Utc);
+    let (added, deleted) = payload
+        .changes
+        .as_ref()
+        .map(|changes| {
+            changes
+                .values()
+                .filter_map(|change| change.unified_diff.as_deref())
+                .map(count_patch_text_lines)
+                .fold((0, 0), |acc, next| (acc.0 + next.0, acc.1 + next.1))
+        })
+        .unwrap_or((0, 0));
+
+    let changed = added + deleted;
+    if changed == 0 {
+        return Some((call_id, None));
+    }
+
+    Some((
+        call_id.clone(),
+        Some(Event {
+            timestamp,
+            model: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cost_usd: 0.0,
+            lines_suggested: changed,
+            lines_accepted: changed,
+            lines_added: added,
+            lines_deleted: deleted,
+            session_file: session_file.to_owned(),
+            request_id: None,
+            raw_cost_usd: None,
+            line_uuid: Some(format!("codex-patch:{session_file}:{call_id}")),
+        }),
+    ))
+}
+
+fn parse_codex_patch_call(line: &str, session_file: &str) -> Option<(String, Event)> {
+    if !line.contains("\"apply_patch\"") {
+        return None;
+    }
+
+    let raw: RawCodexLine = serde_json::from_str(line).ok()?;
+    if raw.line_type.as_deref() != Some("response_item") {
+        return None;
+    }
+    let payload = raw.payload?;
+    if payload.payload_type.as_deref() != Some("custom_tool_call") {
+        return None;
+    }
+    if payload.name.as_deref() != Some("apply_patch") {
+        return None;
+    }
+
+    let call_id = payload.call_id?;
+    let patch = payload.input?;
+    let (added, deleted) = count_patch_text_lines(&patch);
+    let changed = added + deleted;
+    if changed == 0 {
+        return None;
+    }
+
+    let ts_str = raw.timestamp?;
+    let timestamp = DateTime::parse_from_rfc3339(&ts_str)
+        .ok()?
+        .with_timezone(&Utc);
+
+    Some((
+        call_id.clone(),
+        Event {
+            timestamp,
+            model: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cost_usd: 0.0,
+            lines_suggested: changed,
+            lines_accepted: changed,
+            lines_added: added,
+            lines_deleted: deleted,
+            session_file: session_file.to_owned(),
+            request_id: None,
+            raw_cost_usd: None,
+            line_uuid: Some(format!("codex-patch:{session_file}:{call_id}")),
+        },
+    ))
+}
+
+fn parse_codex_tool_output(line: &str) -> Option<(String, bool)> {
+    if !line.contains("\"custom_tool_call_output\"") {
+        return None;
+    }
+
+    let raw: RawCodexLine = serde_json::from_str(line).ok()?;
+    if raw.line_type.as_deref() != Some("response_item") {
+        return None;
+    }
+    let payload = raw.payload?;
+    if payload.payload_type.as_deref() != Some("custom_tool_call_output") {
+        return None;
+    }
+
+    let call_id = payload.call_id?;
+    let output = payload.output.unwrap_or_default();
+    let failed = output.contains("verification failed")
+        || output.contains("Failed to")
+        || output.contains("\"exit_code\":1");
+    let success = !failed && (output.contains("Success.") || output.contains("\"exit_code\":0"));
+    Some((call_id, success))
+}
+
+fn count_patch_text_lines(patch: &str) -> (u64, u64) {
+    let mut added = 0;
+    let mut deleted = 0;
+
+    for line in patch.lines() {
+        if line.starts_with("***")
+            || line.starts_with("@@")
+            || line.starts_with("+++")
+            || line.starts_with("---")
+        {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            deleted += 1;
+        }
+    }
+
+    (added, deleted)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -691,6 +989,82 @@ mod tests {
         assert_eq!(ev.lines_added, 2); // "+added1", "+added2"
         assert_eq!(ev.lines_deleted, 1); // "-removed1"
         assert_eq!(ev.input_tokens, 0);
+    }
+
+    #[test]
+    fn parses_codex_patch_apply_end_changes() {
+        let line = make_line(
+            r#"{
+            "timestamp": "2026-04-01T12:00:00.000Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "patch_apply_end",
+                "call_id": "call_patch",
+                "success": true,
+                "changes": {
+                    "src/lib.rs": {
+                        "type": "update",
+                        "unified_diff": "@@ -1,2 +1,3 @@\n-old\n+new\n+more\n context\n"
+                    }
+                }
+            }
+        }"#,
+        );
+
+        let (_call_id, event) =
+            parse_codex_patch_apply_end(&line, "codex.jsonl").expect("should parse");
+        let ev = event.expect("successful patch should emit metrics");
+        assert_eq!(ev.lines_suggested, 3);
+        assert_eq!(ev.lines_accepted, 3);
+        assert_eq!(ev.lines_added, 2);
+        assert_eq!(ev.lines_deleted, 1);
+        assert_eq!(
+            ev.line_uuid.as_deref(),
+            Some("codex-patch:codex.jsonl:call_patch")
+        );
+    }
+
+    #[test]
+    fn parses_codex_apply_patch_fallback_after_success_output() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ccmeter-codex-patch-ok-{}.jsonl",
+            std::process::id()
+        ));
+        let content = [
+            r#"{"timestamp":"2026-04-01T12:00:00.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_ok","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n+more\n*** End Patch\n"}}"#,
+            r#"{"timestamp":"2026-04-01T12:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_ok","output":"{\"output\":\"Success. Updated the following files:\\nM src/lib.rs\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.0}}"}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = parse_one_file(&path).expect("file should parse");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].lines_added, 2);
+        assert_eq!(events[0].lines_deleted, 1);
+        assert_eq!(events[0].lines_accepted, 3);
+    }
+
+    #[test]
+    fn skips_failed_codex_apply_patch_fallback() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "ccmeter-codex-patch-fail-{}.jsonl",
+            std::process::id()
+        ));
+        let content = [
+            r#"{"timestamp":"2026-04-01T12:00:00.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_fail","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch\n"}}"#,
+            r#"{"timestamp":"2026-04-01T12:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_fail","output":"apply_patch verification failed: Failed to find expected lines"}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let events = parse_one_file(&path).expect("file should parse");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(events.is_empty());
     }
 
     #[test]
@@ -1088,6 +1462,34 @@ mod tests {
             writeln!(f, "{l}").unwrap();
         }
         p
+    }
+
+    #[test]
+    fn parses_codex_cumulative_token_counts() {
+        let dir = tmp_dir("codex_tokens");
+        let turn = r#"{"type":"turn_context","timestamp":"2026-05-09T21:50:10.000Z","payload":{"cwd":"/tmp/ccmeter","model":"gpt-5.5","turn_id":"turn-a"}}"#;
+        let first = r#"{"type":"event_msg","timestamp":"2026-05-09T21:50:11.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"total_tokens":110},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"total_tokens":110},"model_context_window":258400}}}"#;
+        let duplicate = r#"{"type":"event_msg","timestamp":"2026-05-09T21:50:12.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"total_tokens":110},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"total_tokens":110},"model_context_window":258400}}}"#;
+        let second = r#"{"type":"event_msg","timestamp":"2026-05-09T21:50:13.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":100,"output_tokens":20,"total_tokens":270},"last_token_usage":{"input_tokens":150,"cached_input_tokens":60,"output_tokens":10,"total_tokens":160},"model_context_window":258400}}}"#;
+        let path = write_file(&dir, "rollout.jsonl", &[turn, first, duplicate, second]);
+
+        let events = parse_session_files(&[path]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(events.iter().map(|e| e.input_tokens).sum::<u64>(), 250);
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.cache_read_input_tokens)
+                .sum::<u64>(),
+            100
+        );
+        assert_eq!(events.iter().map(|e| e.output_tokens).sum::<u64>(), 20);
+        assert!(events.iter().all(|e| e.model == "gpt-5.5"));
+
+        let expected = cost_from_tokens("gpt-5.5", 250, 20, 100, 0);
+        let actual: f64 = events.iter().map(|e| e.cost_usd).sum();
+        assert!((actual - expected).abs() < 1e-9);
     }
 
     #[test]

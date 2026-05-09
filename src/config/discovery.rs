@@ -3,18 +3,18 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A discovered Claude Code project directory with its JSONL session files.
+/// A discovered agent project/workspace with its JSONL session files.
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
     /// The encoded directory name (e.g. `-Users-hmenzagh-code-CCMeter`).
     pub dir_name: String,
-    /// Absolute path to the project directory inside Claude's data.
+    /// Absolute path to the project directory inside the agent's data.
     pub path: PathBuf,
     /// JSONL session files found (direct or nested in subagent dirs).
     pub session_files: Vec<PathBuf>,
     /// The actual working directory extracted from JSONL metadata.
     pub cwd: Option<String>,
-    /// Which Claude root this came from (e.g. `~/.claude/projects`).
+    /// Which source root this came from (e.g. `~/.claude/projects`, `~/.codex`).
     pub source_root: PathBuf,
 }
 
@@ -74,7 +74,7 @@ pub type RootMap = HashMap<PathBuf, HashSet<String>>;
 /// Mapping from each session file basename to `(root, cwd)`.
 pub type SessionMap = HashMap<String, (String, String)>;
 
-/// Discover all Claude Code projects and group them by git identity.
+/// Discover all supported agent projects and group them by git identity.
 /// Also returns:
 /// - A mapping from each source root to the set of cwds that originate from it.
 /// - A mapping from each session file basename to `(root, cwd)`.
@@ -155,6 +155,8 @@ fn discover_sources() -> Vec<ProjectSource> {
         }
     }
 
+    sources.extend(discover_codex_sources(&home));
+
     sources.sort_by(|a, b| {
         a.source_root
             .cmp(&b.source_root)
@@ -205,6 +207,55 @@ fn find_project_roots(home: &Path) -> Vec<PathBuf> {
 
     roots.sort();
     roots
+}
+
+fn discover_codex_sources(home: &Path) -> Vec<ProjectSource> {
+    let codex_root = home.join(".codex");
+    if !codex_root.is_dir() {
+        return Vec::new();
+    }
+
+    let session_roots = [
+        codex_root.join("sessions"),
+        codex_root.join("archived_sessions"),
+    ];
+
+    let mut by_cwd: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for root in session_roots.iter().filter(|root| root.is_dir()) {
+        for file in collect_jsonl_files_recursive(root) {
+            if let Some(cwd) = extract_cwd_from_jsonl(&file) {
+                by_cwd.entry(cwd).or_default().push(file);
+            }
+        }
+    }
+
+    let mut sources: Vec<ProjectSource> = by_cwd
+        .into_iter()
+        .map(|(cwd, mut session_files)| {
+            session_files.sort();
+            ProjectSource {
+                dir_name: codex_dir_name(&cwd),
+                path: PathBuf::from(&cwd),
+                session_files,
+                cwd: Some(cwd),
+                source_root: codex_root.clone(),
+            }
+        })
+        .collect();
+
+    sources.sort_by(|a, b| a.cwd.cmp(&b.cwd).then_with(|| a.path.cmp(&b.path)));
+    sources
+}
+
+fn codex_dir_name(cwd: &str) -> String {
+    let encoded: String = cwd
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '-',
+            _ => c,
+        })
+        .collect();
+    format!("codex:{encoded}")
 }
 
 // ---------------------------------------------------------------------------
@@ -259,13 +310,23 @@ fn extract_cwd_from_jsonl(path: &Path) -> Option<String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
-            && value.get("type").and_then(|t| t.as_str()) == Some("user")
-            && let Some(cwd) = value.get("cwd").and_then(|c| c.as_str())
+            && let Some(cwd) = extract_cwd_from_json_value(&value)
         {
             return Some(cwd.to_string());
         }
     }
     None
+}
+
+fn extract_cwd_from_json_value(value: &serde_json::Value) -> Option<&str> {
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("user") => value.get("cwd").and_then(|c| c.as_str()),
+        Some("session_meta" | "turn_context") => value
+            .get("payload")
+            .and_then(|payload| payload.get("cwd"))
+            .and_then(|c| c.as_str()),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +655,21 @@ mod tests {
         assert_eq!(
             derive_group_name(&home.join("oppus/GitHubCode/Francis-Monorepo/Francis")),
             "Francis-Monorepo/Francis"
+        );
+    }
+
+    #[test]
+    fn test_extract_codex_cwd() {
+        let value = serde_json::json!({
+            "type": "session_meta",
+            "payload": {
+                "cwd": "/Users/hmenzagh/code/CCMeter"
+            }
+        });
+
+        assert_eq!(
+            extract_cwd_from_json_value(&value),
+            Some("/Users/hmenzagh/code/CCMeter")
         );
     }
 

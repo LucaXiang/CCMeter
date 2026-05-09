@@ -33,6 +33,11 @@ pub struct Theme {
     pub warning: Color,
 
     // ── Models ───────────────────────────────────────────────────────
+    pub model_gpt55: Color,
+    pub model_gpt54_mini: Color,
+    pub model_gpt54: Color,
+    pub model_gpt5_codex: Color,
+    pub model_gpt5: Color,
     pub model_opus: Color,
     pub model_sonnet: Color,
     pub model_haiku: Color,
@@ -116,6 +121,11 @@ impl Theme {
             warning: Color::Yellow,
 
             // Models
+            model_gpt55: Color::Rgb(250, 210, 90),
+            model_gpt54_mini: Color::Rgb(120, 210, 150),
+            model_gpt54: Color::Rgb(80, 205, 210),
+            model_gpt5_codex: Color::Rgb(250, 130, 95),
+            model_gpt5: Color::Rgb(245, 170, 70),
             model_opus: Color::Rgb(190, 120, 240),
             model_sonnet: Color::Rgb(80, 170, 240),
             model_haiku: Color::Rgb(120, 200, 160),
@@ -144,6 +154,11 @@ impl Theme {
 
     pub fn model_color(&self, model: &str) -> Color {
         match model {
+            "gpt-5.5" => self.model_gpt55,
+            "gpt-5.4-mini" => self.model_gpt54_mini,
+            "gpt-5.4" => self.model_gpt54,
+            "gpt-5-codex" => self.model_gpt5_codex,
+            "gpt-5" => self.model_gpt5,
             "opus" => self.model_opus,
             "sonnet" => self.model_sonnet,
             "haiku" => self.model_haiku,

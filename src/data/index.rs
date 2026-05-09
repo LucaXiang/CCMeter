@@ -7,21 +7,31 @@ use super::parser::Event;
 use super::tokens::MinuteTokens;
 
 // ---------------------------------------------------------------------------
-// Model enum — 4 variants, stored as u8
+// Model enum — compact variants, stored as u8
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ModelId {
-    Opus = 0,
-    Sonnet = 1,
-    Haiku = 2,
-    Other = 3,
+    Gpt55 = 0,
+    Gpt54Mini = 1,
+    Gpt54 = 2,
+    Gpt5Codex = 3,
+    Gpt5 = 4,
+    Opus = 5,
+    Sonnet = 6,
+    Haiku = 7,
+    Other = 8,
 }
 
 impl ModelId {
     fn from_raw(model: &str) -> Self {
         match normalize_model(model) {
+            "gpt-5.5" => Self::Gpt55,
+            "gpt-5.4-mini" => Self::Gpt54Mini,
+            "gpt-5.4" => Self::Gpt54,
+            "gpt-5-codex" => Self::Gpt5Codex,
+            "gpt-5" => Self::Gpt5,
             "opus" => Self::Opus,
             "sonnet" => Self::Sonnet,
             "haiku" => Self::Haiku,
@@ -31,6 +41,11 @@ impl ModelId {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Gpt55 => "gpt-5.5",
+            Self::Gpt54Mini => "gpt-5.4-mini",
+            Self::Gpt54 => "gpt-5.4",
+            Self::Gpt5Codex => "gpt-5-codex",
+            Self::Gpt5 => "gpt-5",
             Self::Opus => "opus",
             Self::Sonnet => "sonnet",
             Self::Haiku => "haiku",
@@ -47,8 +62,8 @@ impl ModelId {
 ///
 /// `model_idx` points into `EventIndex::models` for the full model string
 /// (e.g. "claude-opus-4-6-...") so per-entry pricing stays precise. `model`
-/// is the coarse family (Opus/Sonnet/Haiku/Other) derived from that string
-/// for legacy aggregation paths.
+/// is the coarse family (GPT/Claude/Other) derived from that string for
+/// legacy aggregation paths.
 #[derive(Debug, Clone)]
 pub struct CompactEntry {
     pub root_idx: u16,
@@ -292,7 +307,7 @@ impl EventIndex {
 
             let key = (rk_idx, e.model);
 
-            let total = e.input_tokens + e.output_tokens;
+            let total = e.input_tokens + e.output_tokens + e.cache_read + e.cache_creation;
             if e.model != ModelId::Other || total > 0 {
                 *tok_agg.entry(key).or_default() += total;
             }
@@ -647,5 +662,68 @@ impl EventIndex {
             return false;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+
+    fn event(session_file: &str, model: &str, input: u64, output: u64, cache_read: u64) -> Event {
+        Event {
+            timestamp: DateTime::parse_from_rfc3339("2026-05-10T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            model: model.to_string(),
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: 0,
+            cost_usd: 0.0,
+            lines_suggested: 0,
+            lines_accepted: 0,
+            lines_added: 0,
+            lines_deleted: 0,
+            session_file: session_file.to_string(),
+            request_id: None,
+            raw_cost_usd: None,
+            line_uuid: None,
+        }
+    }
+
+    #[test]
+    fn model_stats_token_share_includes_cache_tokens() {
+        let events = vec![
+            event("claude.jsonl", "claude-sonnet-4-6", 10, 5, 1_000),
+            event("codex.jsonl", "gpt-5.5", 100, 100, 0),
+        ];
+        let session_info = HashMap::from([
+            (
+                "claude.jsonl".to_string(),
+                ("source".to_string(), "/repo".to_string()),
+            ),
+            (
+                "codex.jsonl".to_string(),
+                ("source".to_string(), "/repo".to_string()),
+            ),
+        ]);
+        let cwd_to_root = HashMap::from([("/repo".to_string(), "repo".to_string())]);
+        let index = EventIndex::build(&events, &session_info);
+
+        let stats = index.build_model_stats(&cwd_to_root, None, &|_| true, None, false, None);
+
+        assert_eq!(
+            stats
+                .tokens
+                .get(&("repo".to_string(), "sonnet".to_string())),
+            Some(&1_015)
+        );
+        assert_eq!(
+            stats
+                .tokens
+                .get(&("repo".to_string(), "gpt-5.5".to_string())),
+            Some(&200)
+        );
     }
 }

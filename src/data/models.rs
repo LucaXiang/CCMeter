@@ -51,6 +51,17 @@ pub fn per_model_total_tokens(per_model: &[PerModelUsage]) -> u64 {
 
 /// (pattern, (input_price, output_price, cache_read_price)) per million tokens.
 const PRICING_TABLE: &[(&str, (f64, f64, f64))] = &[
+    ("gpt-5.5", (5.0, 30.0, 0.50)),
+    ("gpt-5.4-mini", (0.75, 4.50, 0.075)),
+    ("gpt-5.4", (2.50, 15.0, 0.25)),
+    ("gpt-5.3-codex", (1.75, 14.0, 0.175)),
+    ("gpt-5.3", (1.75, 14.0, 0.175)),
+    ("gpt-5.2-codex", (1.75, 14.0, 0.175)),
+    ("gpt-5.2", (1.75, 14.0, 0.175)),
+    ("gpt-5.1-codex", (1.25, 10.0, 0.125)),
+    ("gpt-5-codex", (1.25, 10.0, 0.125)),
+    ("gpt-5", (1.25, 10.0, 0.125)),
+    ("codex", (1.25, 10.0, 0.125)),
     ("opus-4-6", (5.0, 25.0, 0.50)),
     ("opus-4-5", (5.0, 25.0, 0.50)),
     ("opus-4-1", (15.0, 75.0, 1.50)),
@@ -67,6 +78,7 @@ const FALLBACK_PRICING: (f64, f64, f64) = (3.0, 15.0, 0.30);
 
 /// Prix par million de tokens (input, output, cache_read) pour chaque modèle.
 pub(crate) fn model_pricing(model: &str) -> (f64, f64, f64) {
+    let model = model.to_ascii_lowercase();
     PRICING_TABLE
         .iter()
         .find(|(pattern, _)| model.contains(pattern))
@@ -76,7 +88,18 @@ pub(crate) fn model_pricing(model: &str) -> (f64, f64, f64) {
 
 /// Normalize a full model ID to a short family name.
 pub(crate) fn normalize_model(model: &str) -> &'static str {
-    if model.contains("opus") {
+    let model = model.to_ascii_lowercase();
+    if model.contains("gpt-5.5") {
+        "gpt-5.5"
+    } else if model.contains("gpt-5.4-mini") {
+        "gpt-5.4-mini"
+    } else if model.contains("gpt-5.4") {
+        "gpt-5.4"
+    } else if model.contains("codex") {
+        "gpt-5-codex"
+    } else if model.contains("gpt-5") {
+        "gpt-5"
+    } else if model.contains("opus") {
         "opus"
     } else if model.contains("sonnet") {
         "sonnet"
@@ -112,5 +135,25 @@ pub(crate) fn format_cost(c: f64) -> String {
         format!("${:.2}", c)
     } else {
         format!("¢{:.0}", c * 100.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_openai_model_families() {
+        assert_eq!(normalize_model("gpt-5.5"), "gpt-5.5");
+        assert_eq!(normalize_model("gpt-5.4-mini"), "gpt-5.4-mini");
+        assert_eq!(normalize_model("gpt-5.4"), "gpt-5.4");
+        assert_eq!(normalize_model("gpt-5.3-codex"), "gpt-5-codex");
+        assert_eq!(normalize_model("gpt-5"), "gpt-5");
+        assert_eq!(normalize_model("codex"), "gpt-5-codex");
+    }
+
+    #[test]
+    fn codex_fallback_uses_openai_pricing() {
+        assert_eq!(model_pricing("codex"), (1.25, 10.0, 0.125));
     }
 }

@@ -46,7 +46,10 @@ pub struct DayEntry {
 ///   sub-agent activity (parent + sub-agent JSONLs both logged the same
 ///   `req_…`), so the high-water-mark merge would freeze the inflated
 ///   values in place.
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// - v3: Codex rollouts now contribute code metrics from successful
+///   `apply_patch` events and OpenAI model families no longer collapse into
+///   `other`; rebuild historical aggregates so old Codex days are complete.
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Full cache: source_root -> cwd -> date (YYYY-MM-DD) -> metrics.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
