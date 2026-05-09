@@ -769,6 +769,10 @@ fn preserve_credential_state(existing: &[OAuthCredential], fresh: &mut [OAuthCre
             continue;
         };
 
+        if cred.is_codex() {
+            continue;
+        }
+
         cred.stats = previous.stats.clone();
         // Only carry over the cached usage when the credential is still
         // pollable: if the token has expired we stop fetching (see

@@ -4,7 +4,13 @@ use crate::data::oauth::OAuthCredential;
 use crate::ui::theme::Theme;
 
 pub(super) fn credential_status_message(cred: &OAuthCredential) -> String {
-    if cred.access_token.is_none() {
+    if cred.is_codex() {
+        if cred.usage.is_some() {
+            "Codex local snapshot does not include a usable 5h window yet.".to_string()
+        } else {
+            "No Codex rate-limit snapshot found in local rollouts yet.".to_string()
+        }
+    } else if cred.access_token.is_none() {
         "No OAuth token saved for this source yet.".to_string()
     } else if cred.is_expired() {
         "Saved OAuth token is expired; waiting for rediscovery.".to_string()
@@ -31,6 +37,11 @@ pub(super) fn credential_status_detail(cred: &OAuthCredential) -> Option<String>
     if let Some(_last_fetch) = cred.stats.last_fetch {
         bits.push(format!("last success {}", cred.stats.last_fetch_ago()));
     }
+    if cred.is_codex()
+        && let Some(age) = cred.snapshot_ago()
+    {
+        bits.push(format!("snapshot {age}"));
+    }
 
     if bits.is_empty() {
         None
@@ -40,7 +51,13 @@ pub(super) fn credential_status_detail(cred: &OAuthCredential) -> Option<String>
 }
 
 pub(super) fn credential_status_color(cred: &OAuthCredential, t: &Theme) -> Color {
-    if cred.access_token.is_none() || cred.is_expired() {
+    if cred.is_codex() {
+        if cred.usage.is_some() {
+            t.text_dim
+        } else {
+            t.warning
+        }
+    } else if cred.access_token.is_none() || cred.is_expired() {
         t.warning
     } else if cred.stats.last_error.is_some() {
         t.error
@@ -50,7 +67,13 @@ pub(super) fn credential_status_color(cred: &OAuthCredential, t: &Theme) -> Colo
 }
 
 pub(super) fn credential_poll_label(cred: &OAuthCredential) -> String {
-    if cred.access_token.is_none() {
+    if cred.is_codex() {
+        if let Some(age) = cred.snapshot_ago() {
+            format!("local snapshot {age}")
+        } else {
+            "no local snapshot".to_string()
+        }
+    } else if cred.access_token.is_none() {
         "no token".to_string()
     } else if cred.is_expired() {
         "token expired".to_string()

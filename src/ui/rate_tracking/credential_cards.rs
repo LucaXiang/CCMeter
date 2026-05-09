@@ -135,7 +135,7 @@ fn render_card(
     frame.render_widget(block, area);
 
     match &cred.usage {
-        Some(usage) => render_compact_usage(frame, inner, usage, &cred.stats),
+        Some(usage) => render_compact_usage(frame, inner, cred, usage),
         None => {
             let mut lines = vec![Line::from(Span::styled(
                 credential_status_message(cred),
@@ -174,7 +174,12 @@ fn extra_usage_title(usage: Option<&UsageReport>) -> Vec<Span<'static>> {
     )]
 }
 
-fn render_compact_usage(frame: &mut Frame, area: Rect, usage: &UsageReport, stats: &UsageStats) {
+fn render_compact_usage(
+    frame: &mut Frame,
+    area: Rect,
+    cred: &OAuthCredential,
+    usage: &UsageReport,
+) {
     let t = theme();
 
     let windows: &[(&str, Option<&UsageWindow>)] = &[
@@ -216,13 +221,21 @@ fn render_compact_usage(frame: &mut Frame, area: Rect, usage: &UsageReport, stat
     }
 
     // Status line
-    let status = Line::from(vec![Span::styled(
+    let stats: &UsageStats = &cred.stats;
+    let status_text = if cred.is_codex() {
+        cred.snapshot_ago()
+            .map(|age| format!("local snapshot {age}"))
+            .unwrap_or_else(|| "no local snapshot".to_string())
+    } else {
         format!(
             "polled {} ({}req, {}err)",
             stats.last_fetch_ago(),
             stats.call_count,
             stats.rate_limit_count,
-        ),
+        )
+    };
+    let status = Line::from(vec![Span::styled(
+        status_text,
         Style::default().fg(t.text_dim),
     )]);
     frame.render_widget(Paragraph::new(status), rows[items.len()]);

@@ -10,6 +10,10 @@ use super::rate_limits::RateLimitHit;
 pub struct HitHistoryEntry {
     pub timestamp: DateTime<Utc>,
     pub source_root: String,
+    /// Human-readable hit message, used to distinguish Codex primary and
+    /// secondary hits when they land in the same bucket.
+    #[serde(default)]
+    pub message: String,
     /// Per-model tokens + cost split observed across the session leading up
     /// to the hit. `tokens = sum(input + output)` is derivable on demand.
     #[serde(default)]
@@ -25,13 +29,15 @@ pub struct HitHistory {
     pub entries: Vec<HitHistoryEntry>,
 }
 
-/// Build a dedup key matching the 15-minute bucket logic in rate_limits.rs.
-pub fn dedup_key(ts: &DateTime<Utc>, source_root: &str) -> String {
+fn dedup_key_for_hit(hit: &RateLimitHit) -> String {
+    if !hit.dedup_key.is_empty() {
+        return hit.dedup_key.clone();
+    }
     format!(
         "{}-{:02}-{}",
-        ts.format("%Y-%m-%dT%H"),
-        ts.minute() / 15 * 15,
-        source_root,
+        hit.timestamp.format("%Y-%m-%dT%H"),
+        hit.timestamp.minute() / 15 * 15,
+        hit.source_root,
     )
 }
 
@@ -93,7 +99,7 @@ impl HitHistory {
         let mut changed = false;
 
         for hit in fresh_hits {
-            let key = dedup_key(&hit.timestamp, &hit.source_root);
+            let key = dedup_key_for_hit(hit);
 
             match self.entries.iter_mut().find(|e| e.dedup_key == key) {
                 Some(existing) => {
@@ -114,12 +120,17 @@ impl HitHistory {
                     existing.per_model = new_per_model;
                     existing.session_duration_min = new_duration;
                     existing.timestamp = hit.timestamp;
+                    if !hit.message.is_empty() && existing.message != hit.message {
+                        existing.message = hit.message.clone();
+                        changed = true;
+                    }
                 }
                 None => {
                     changed = true;
                     self.entries.push(HitHistoryEntry {
                         timestamp: hit.timestamp,
                         source_root: hit.source_root.clone(),
+                        message: hit.message.clone(),
                         per_model: hit.per_model.clone(),
                         session_duration_min: hit.session_duration_min,
                         dedup_key: key,
@@ -133,11 +144,12 @@ impl HitHistory {
             .iter()
             .map(|e| RateLimitHit {
                 timestamp: e.timestamp,
-                message: String::new(),
+                message: e.message.clone(),
                 source_root: e.source_root.clone(),
                 session_duration_min: e.session_duration_min,
                 tokens: per_model_total_tokens(&e.per_model),
                 per_model: e.per_model.clone(),
+                dedup_key: e.dedup_key.clone(),
             })
             .collect();
 

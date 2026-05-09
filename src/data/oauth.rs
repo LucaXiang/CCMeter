@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
@@ -69,9 +71,16 @@ impl UsageStats {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialProvider {
+    Claude,
+    Codex,
+}
+
 /// OAuth credential info for a single Claude source, with async usage polling.
 #[derive(Debug, Clone)]
 pub struct OAuthCredential {
+    pub provider: CredentialProvider,
     /// Which source root this credential belongs to (e.g. `~/.claude/projects`).
     pub source_root: PathBuf,
     pub subscription_type: Option<String>,
@@ -82,12 +91,37 @@ pub struct OAuthCredential {
     pub access_token: Option<String>,
     /// Latest usage report.
     pub usage: Option<UsageReport>,
+    /// Timestamp of the local Codex snapshot backing `usage`.
+    pub snapshot_timestamp: Option<DateTime<Utc>>,
     /// Polling stats.
     pub stats: UsageStats,
 }
 
 impl OAuthCredential {
+    pub fn is_codex(&self) -> bool {
+        self.provider == CredentialProvider::Codex
+    }
+
+    pub fn snapshot_ago(&self) -> Option<String> {
+        self.snapshot_timestamp.map(|ts| {
+            let secs = (Utc::now() - ts).num_seconds().max(0) as u64;
+            if secs < 60 {
+                format!("{}s ago", secs)
+            } else if secs < 3600 {
+                format!("{}m{}s ago", secs / 60, secs % 60)
+            } else if secs < 86_400 {
+                format!("{}h{}m ago", secs / 3600, (secs % 3600) / 60)
+            } else {
+                format!("{}d{}h ago", secs / 86_400, (secs % 86_400) / 3600)
+            }
+        })
+    }
+
     pub fn is_expired(&self) -> bool {
+        if self.is_codex() {
+            return false;
+        }
+
         match self.expires_at {
             Some(exp) => {
                 let now_ms = std::time::SystemTime::now()
@@ -366,7 +400,7 @@ pub fn discover_credentials_with_usage(source_roots: &[PathBuf]) -> Vec<OAuthCre
     use rayon::prelude::*;
     let mut creds = discover_credentials(source_roots);
     creds.par_iter_mut().for_each(|cred| {
-        if cred.access_token.is_some() && !cred.is_expired() {
+        if !cred.is_codex() && cred.access_token.is_some() && !cred.is_expired() {
             let result = fetch_usage_raw(cred.access_token.as_deref().unwrap());
             cred.stats.attempt_count += 1;
             if result.was_rate_limited {
@@ -391,6 +425,11 @@ pub fn discover_credentials(source_roots: &[PathBuf]) -> Vec<OAuthCredential> {
     let mut credentials = Vec::new();
 
     for root in source_roots {
+        if root.file_name().and_then(|name| name.to_str()) == Some(".codex") {
+            credentials.push(codex_credential(root));
+            continue;
+        }
+
         let Some(parent) = root.parent() else {
             continue;
         };
@@ -436,13 +475,160 @@ struct OAuthEntry {
 
 fn new_credential(oauth: OAuthEntry, source_root: &Path) -> OAuthCredential {
     OAuthCredential {
+        provider: CredentialProvider::Claude,
         source_root: source_root.to_path_buf(),
         subscription_type: oauth.subscription_type,
         rate_limit_tier: oauth.rate_limit_tier,
         expires_at: oauth.expires_at,
         access_token: oauth.access_token,
         usage: None,
+        snapshot_timestamp: None,
         stats: UsageStats::default(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CodexRateLine {
+    timestamp: Option<String>,
+    #[serde(rename = "type")]
+    line_type: Option<String>,
+    payload: Option<CodexRatePayload>,
+}
+
+#[derive(Deserialize)]
+struct CodexRatePayload {
+    #[serde(rename = "type")]
+    payload_type: Option<String>,
+    rate_limits: Option<CodexRateLimits>,
+}
+
+#[derive(Deserialize)]
+struct CodexRateLimits {
+    plan_type: Option<String>,
+    primary: Option<CodexRateWindow>,
+    secondary: Option<CodexRateWindow>,
+}
+
+#[derive(Deserialize)]
+struct CodexRateWindow {
+    used_percent: Option<f64>,
+    window_minutes: Option<u64>,
+    resets_at: Option<i64>,
+}
+
+struct CodexUsageSnapshot {
+    timestamp: DateTime<Utc>,
+    plan_type: Option<String>,
+    usage: UsageReport,
+}
+
+fn codex_credential(source_root: &Path) -> OAuthCredential {
+    let snapshot = latest_codex_usage(source_root);
+    let snapshot_timestamp = snapshot.as_ref().map(|s| s.timestamp);
+    let mut stats = UsageStats::default();
+    if snapshot.is_some() {
+        stats.attempt_count = 1;
+        stats.call_count = 1;
+    }
+
+    OAuthCredential {
+        provider: CredentialProvider::Codex,
+        source_root: source_root.to_path_buf(),
+        subscription_type: snapshot
+            .as_ref()
+            .and_then(|s| s.plan_type.clone())
+            .or_else(|| Some("codex".to_string())),
+        rate_limit_tier: None,
+        expires_at: None,
+        access_token: None,
+        usage: snapshot.map(|s| s.usage),
+        snapshot_timestamp,
+        stats,
+    }
+}
+
+fn latest_codex_usage(source_root: &Path) -> Option<CodexUsageSnapshot> {
+    let mut files = Vec::new();
+    collect_jsonl_recursive(&source_root.join("sessions"), &mut files);
+    collect_jsonl_recursive(&source_root.join("archived_sessions"), &mut files);
+
+    files
+        .iter()
+        .filter_map(|path| latest_codex_usage_in_file(path))
+        .max_by_key(|snapshot| snapshot.timestamp)
+}
+
+fn latest_codex_usage_in_file(path: &Path) -> Option<CodexUsageSnapshot> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    reader
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| parse_codex_usage_line(&line))
+        .max_by_key(|snapshot| snapshot.timestamp)
+}
+
+fn parse_codex_usage_line(line: &str) -> Option<CodexUsageSnapshot> {
+    if !line.contains("\"rate_limits\"") || !line.contains("\"token_count\"") {
+        return None;
+    }
+
+    let raw: CodexRateLine = serde_json::from_str(line).ok()?;
+    if raw.line_type.as_deref() != Some("event_msg") {
+        return None;
+    }
+    let payload = raw.payload?;
+    if payload.payload_type.as_deref() != Some("token_count") {
+        return None;
+    }
+
+    let ts = DateTime::parse_from_rfc3339(raw.timestamp.as_deref()?)
+        .ok()?
+        .with_timezone(&Utc);
+    let limits = payload.rate_limits?;
+
+    Some(CodexUsageSnapshot {
+        timestamp: ts,
+        plan_type: limits.plan_type,
+        usage: UsageReport {
+            five_hour: limits.primary.and_then(codex_window_to_usage),
+            seven_day: limits.secondary.and_then(codex_window_to_usage),
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            seven_day_cowork: None,
+            extra_usage: None,
+        },
+    })
+}
+
+fn codex_window_to_usage(window: CodexRateWindow) -> Option<UsageWindow> {
+    let resets_at = window
+        .resets_at
+        .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
+        .map(|ts| ts.to_rfc3339());
+
+    match window.window_minutes {
+        Some(300 | 10080) | None => Some(UsageWindow {
+            utilization: window.used_percent?,
+            resets_at,
+        }),
+        Some(_) => None,
+    }
+}
+
+fn collect_jsonl_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "jsonl") && path.is_file() {
+            out.push(path);
+        } else if path.is_dir() {
+            collect_jsonl_recursive(&path, out);
+        }
     }
 }
 
@@ -549,14 +735,65 @@ mod tests {
     }
 
     #[test]
+    fn discovers_codex_local_usage() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ccmeter_codex_oauth_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let codex = tmp.join(".codex");
+        let sessions = codex.join("sessions").join("2026").join("05").join("10");
+        std::fs::create_dir_all(&sessions).unwrap();
+
+        let path = sessions.join("rollout.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"event_msg","timestamp":"2026-05-10T10:00:00.000Z","payload":{{"type":"token_count","rate_limits":{{"plan_type":"prolite","primary":{{"used_percent":12.5,"window_minutes":300,"resets_at":1778381293}},"secondary":{{"used_percent":3.0,"window_minutes":10080,"resets_at":1778968093}}}}}}}}"#
+        )
+        .unwrap();
+
+        let creds = discover_credentials(std::slice::from_ref(&codex));
+        assert_eq!(creds.len(), 1);
+        assert!(creds[0].is_codex());
+        assert_eq!(creds[0].subscription_type.as_deref(), Some("prolite"));
+        assert_eq!(
+            creds[0].snapshot_timestamp.unwrap().to_rfc3339(),
+            "2026-05-10T10:00:00+00:00"
+        );
+        assert!(creds[0].stats.last_fetch.is_none());
+
+        let usage = creds[0].usage.as_ref().expect("codex usage");
+        assert_eq!(usage.five_hour.as_ref().unwrap().utilization, 12.5);
+        assert_eq!(usage.seven_day.as_ref().unwrap().utilization, 3.0);
+        assert!(
+            usage
+                .five_hour
+                .as_ref()
+                .unwrap()
+                .resets_at
+                .as_deref()
+                .unwrap()
+                .contains('T')
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn detects_expired_token() {
         let cred = OAuthCredential {
+            provider: CredentialProvider::Claude,
             source_root: PathBuf::from("/tmp"),
             subscription_type: None,
             rate_limit_tier: None,
             expires_at: Some(1000),
             access_token: None,
             usage: None,
+            snapshot_timestamp: None,
             stats: UsageStats::default(),
         };
         assert!(cred.is_expired());
