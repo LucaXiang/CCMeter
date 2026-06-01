@@ -20,7 +20,31 @@ use crate::ui::loading::draw_loading;
 
 #[derive(Parser)]
 #[command(name = "ccmeter", about = "Claude Code usage statistics")]
-struct Cli {}
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Backfill historical usage from persistent sources (stats-cache.json,
+    /// Code Insights) back to 2026-01-01, merging into the local history cache.
+    Backfill {
+        /// Print what would be written without modifying the cache.
+        #[arg(long)]
+        dry_run: bool,
+        /// Which source(s) to read.
+        #[arg(long, value_enum, default_value_t = SourceArg::All)]
+        source: SourceArg,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SourceArg {
+    All,
+    StatsCache,
+    CodeInsights,
+}
 
 struct TerminalGuard;
 
@@ -40,7 +64,11 @@ enum State {
 }
 
 fn main() -> io::Result<()> {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
+
+    if let Some(Command::Backfill { dry_run, source }) = cli.command {
+        return run_backfill_cli(dry_run, source);
+    }
 
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -101,5 +129,31 @@ fn main() -> io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn run_backfill_cli(dry_run: bool, source: SourceArg) -> io::Result<()> {
+    use crate::data::backfill::{self, BackfillOptions, SourceSel};
+
+    let source = match source {
+        SourceArg::All => SourceSel::All,
+        SourceArg::StatsCache => SourceSel::StatsCache,
+        SourceArg::CodeInsights => SourceSel::CodeInsights,
+    };
+
+    let summary = backfill::run_backfill(&BackfillOptions { dry_run, source });
+
+    let verb = if summary.dry_run {
+        "would backfill"
+    } else {
+        "backfilled"
+    };
+    match (summary.earliest, summary.latest) {
+        (Some(e), Some(l)) => println!(
+            "{verb} {} day(s), {e} -> {l}: {} input + {} output tokens, ${:.2}",
+            summary.days, summary.total_input, summary.total_output, summary.total_cost
+        ),
+        _ => println!("{verb} 0 days (no historical sources found)"),
+    }
     Ok(())
 }
