@@ -51,6 +51,8 @@ pub fn per_model_total_tokens(per_model: &[PerModelUsage]) -> u64 {
 
 /// (pattern, (input_price, output_price, cache_read_price)) per million tokens.
 const PRICING_TABLE: &[(&str, (f64, f64, f64))] = &[
+    ("gpt-5", (1.25, 10.0, 0.125)),
+    ("codex", (1.25, 10.0, 0.125)),
     ("opus-4-6", (5.0, 25.0, 0.50)),
     ("opus-4-5", (5.0, 25.0, 0.50)),
     ("opus-4-1", (15.0, 75.0, 1.50)),
@@ -72,6 +74,11 @@ pub(crate) fn model_pricing(model: &str) -> (f64, f64, f64) {
         .find(|(pattern, _)| model.contains(pattern))
         .map(|(_, pricing)| *pricing)
         .unwrap_or(FALLBACK_PRICING)
+}
+
+/// True for OpenAI Codex CLI models (priced via the OpenAI estimate rows).
+pub(crate) fn is_codex_model(model: &str) -> bool {
+    model.contains("gpt-") || model.contains("codex")
 }
 
 /// Cost (USD) from delta token counts via the local pricing table.
@@ -153,5 +160,15 @@ mod tests {
     #[test]
     fn cost_from_tokens_zero_is_zero() {
         assert_eq!(cost_from_tokens("claude-opus-4-6", 0, 0, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn codex_models_are_priced_and_detected() {
+        assert!(is_codex_model("gpt-5.5"));
+        assert!(is_codex_model("gpt-5.3-codex"));
+        assert!(!is_codex_model("claude-opus-4-6"));
+        // gpt-5 priced (non-fallback): a pure-output cost is nonzero.
+        let c = cost_from_tokens("gpt-5.5", 0, 1_000_000, 0, 0);
+        assert!(c > 0.0);
     }
 }
