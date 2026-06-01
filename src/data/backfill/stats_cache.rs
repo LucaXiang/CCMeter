@@ -105,7 +105,7 @@ fn split_total(total: u64, weights: [u64; 4]) -> [u64; 4] {
         allocated += out[i];
         fracs[i] = (i, exact - floor);
     }
-    let mut remainder = total - allocated;
+    let mut remainder = total.saturating_sub(allocated);
     fracs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let mut k = 0usize;
     while remainder > 0 {
@@ -156,5 +156,16 @@ mod tests {
     fn empty_or_missing_yields_nothing() {
         assert!(parse_stats_cache_str("{}").is_empty());
         assert!(parse_stats_cache_str("not json").is_empty());
+    }
+
+    #[test]
+    fn split_total_distributes_remainder_by_largest_fraction() {
+        // total 10, weights [3,3,3,0], sum 9 -> exact 3.33 each (idx 0..2).
+        // floors sum to 9, remainder 1 goes to the first largest-fraction
+        // bucket; ties keep original order (stable sort) -> index 0.
+        assert_eq!(split_total(10, [3, 3, 3, 0]), [4, 3, 3, 0]);
+        // sum exactly preserved
+        let parts = split_total(10, [3, 3, 3, 0]);
+        assert_eq!(parts.iter().sum::<u64>(), 10);
     }
 }
