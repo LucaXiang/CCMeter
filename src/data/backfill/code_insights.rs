@@ -36,6 +36,9 @@ pub fn read_code_insights(db_path: &Path) -> Vec<BackfillDay> {
     ) else {
         return Vec::new();
     };
+    // Code Insights may be writing to this DB concurrently; wait briefly on a
+    // transient lock rather than returning nothing.
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(200));
     read_from_conn(&conn)
 }
 
@@ -140,5 +143,28 @@ mod tests {
     fn missing_db_returns_empty() {
         let days = read_code_insights(std::path::Path::new("/no/such/file.db"));
         assert!(days.is_empty());
+    }
+
+    #[test]
+    fn buckets_messages_into_separate_days() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, project_path TEXT);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, usage TEXT, timestamp TEXT);
+             INSERT INTO sessions VALUES ('s1','/Users/x/proj');
+             INSERT INTO messages VALUES ('m1','s1','assistant',
+               '{\"inputTokens\":10,\"outputTokens\":1,\"cacheReadTokens\":0,\"cacheCreationTokens\":0,\"model\":\"claude-opus-4-6\"}',
+               '2026-03-25T12:00:00.000Z');
+             INSERT INTO messages VALUES ('m2','s1','assistant',
+               '{\"inputTokens\":20,\"outputTokens\":2,\"cacheReadTokens\":0,\"cacheCreationTokens\":0,\"model\":\"claude-opus-4-6\"}',
+               '2026-03-26T12:00:00.000Z');",
+        )
+        .unwrap();
+        let mut days = read_from_conn(&conn);
+        days.sort_by_key(|d| d.date);
+        assert_eq!(days.len(), 2);
+        assert_eq!(days[0].entry.input, 10);
+        assert_eq!(days[1].entry.input, 20);
+        assert!(days[0].date < days[1].date);
     }
 }
