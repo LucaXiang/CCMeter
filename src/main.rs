@@ -150,10 +150,10 @@ fn run_backfill_cli(dry_run: bool, source: SourceArg) -> io::Result<()> {
     };
     match (summary.earliest, summary.latest) {
         (Some(e), Some(l)) => println!(
-            "{verb} {} day(s), {e} -> {l}: {} input + {} output tokens, ${:.2}",
+            "{verb} {} record(s), {e} -> {l}: {} input + {} output tokens, ${:.2}",
             summary.days, summary.total_input, summary.total_output, summary.total_cost
         ),
-        _ => println!("{verb} 0 days (no historical sources found)"),
+        _ => println!("{verb} 0 records (no historical sources found)"),
     }
     Ok(())
 }
