@@ -922,6 +922,14 @@ fn load_data(
     let outcome = cache::load();
     let fresh_cache = cache::from_events(&events, session_map);
     let merged = cache::merge(outcome.cache, &fresh_cache);
+    // Fold live Codex usage (~/.codex/sessions) under the `codex` root so it
+    // aggregates with Claude in the "All" view and persists. merge() is
+    // high-water-mark per (root, cwd, date); the codex root never collides
+    // with Claude/backfill roots, so totals in "All" are additive, not double
+    // counted. This runs off the UI thread (load_data is always called from a
+    // background loader/reload thread), so the extra parse is not user-facing.
+    let (codex_cache, _codex_cwds) = crate::data::codex::load_codex_cache();
+    let merged = cache::merge(merged, &codex_cache);
     cache::save(&merged);
 
     let index = EventIndex::build(&events, session_map);
