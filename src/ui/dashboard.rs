@@ -145,7 +145,7 @@ impl App {
     fn draw_backfill_note(&self, frame: &mut Frame, area: Rect) {
         let t = theme();
         let note = Paragraph::new(Span::styled(
-            "ⓘ Pre-window history is token-only (no per-project / line / model detail).",
+            "ⓘ Older history is backfilled: token totals only (no per-project / line / model detail).",
             Style::default().fg(t.text_dim),
         ))
         .alignment(Alignment::Center);
