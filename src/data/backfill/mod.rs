@@ -47,7 +47,6 @@ impl SourceSel {
 pub struct BackfillOptions {
     pub dry_run: bool,
     pub source: SourceSel,
-    pub since: Option<NaiveDate>,
 }
 
 #[derive(Debug, Default)]
@@ -70,9 +69,12 @@ fn real_root_min_date(cache: &Cache) -> Option<NaiveDate> {
         .min()
 }
 
-/// Replace the synthetic backfill roots with freshly computed days. Removing
-/// first keeps re-runs idempotent and prevents stale stats-cache days from
-/// lingering once Code Insights covers the same date.
+/// Replace the synthetic backfill roots with freshly computed days. BOTH
+/// `backfill:*` roots are always removed first (regardless of which sources
+/// were selected), then the layered days are inserted. This keeps re-runs
+/// idempotent and prevents stale days from lingering once a richer source
+/// covers the same date, but means a single-source run overwrites the entire
+/// backfill state — always re-run with all sources to get a complete backfill.
 fn apply_backfill(cache: &mut Cache, layered: &[BackfillDay]) {
     cache.remove_root(STATS_CACHE_ROOT);
     cache.remove_root(CODE_INSIGHTS_ROOT);
@@ -97,6 +99,12 @@ fn summarize(layered: &[BackfillDay], dry_run: bool) -> BackfillSummary {
     }
 }
 
+/// Read persistent historical sources and merge them into the on-disk history
+/// cache under synthetic `backfill:*` roots. The boundary is the earliest date
+/// held under a real (live-JSONL) root; only dates strictly before it are
+/// backfilled, so the live window is never overwritten. When the cache has no
+/// real roots yet, the boundary falls back to today (all available history is
+/// imported).
 pub fn run_backfill(opts: &BackfillOptions) -> BackfillSummary {
     let home = dirs::home_dir().unwrap_or_default();
     let stats_path = home.join(".claude").join("stats-cache.json");
@@ -117,10 +125,7 @@ pub fn run_backfill(opts: &BackfillOptions) -> BackfillSummary {
         Vec::new()
     };
 
-    let mut layered = layering::layer(ci_days, stats_days, boundary);
-    if let Some(since) = opts.since {
-        layered.retain(|d| d.date >= since);
-    }
+    let layered = layering::layer(ci_days, stats_days, boundary);
 
     let summary = summarize(&layered, opts.dry_run);
     if opts.dry_run {
