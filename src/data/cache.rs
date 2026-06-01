@@ -675,12 +675,13 @@ mod tests {
 
     #[test]
     fn remove_root_drops_only_that_root() {
+        use crate::data::backfill::{HISTORICAL_CWD, STATS_CACHE_ROOT};
         let mut cache = Cache::new();
         insert_entry(&mut cache, "real", "p", "2026-05-01", DayEntry { input: 1, ..Default::default() });
-        insert_entry(&mut cache, "backfill:stats-cache", "(historical)", "2026-01-01", DayEntry { input: 2, ..Default::default() });
-        cache.remove_root("backfill:stats-cache");
+        insert_entry(&mut cache, STATS_CACHE_ROOT, HISTORICAL_CWD, "2026-01-01", DayEntry { input: 2, ..Default::default() });
+        cache.remove_root(STATS_CACHE_ROOT);
         assert!(cache.get_root("real").is_some());
-        assert!(cache.get_root("backfill:stats-cache").is_none());
+        assert!(cache.get_root(STATS_CACHE_ROOT).is_none());
     }
 
     #[test]
