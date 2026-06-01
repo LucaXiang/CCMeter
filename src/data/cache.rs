@@ -11,7 +11,7 @@ use super::tokens::DailyTokens;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DayEntry {
     #[serde(default)]
     pub input: u64,
@@ -97,6 +97,12 @@ impl Cache {
     #[cfg(test)]
     pub fn get_root(&self, root: &str) -> Option<&HashMap<String, HashMap<String, DayEntry>>> {
         self.0.get(root)
+    }
+
+    /// Drop an entire source root (used to replace synthetic `backfill:*`
+    /// roots on each backfill run so re-runs stay idempotent).
+    pub fn remove_root(&mut self, root: &str) {
+        self.0.remove(root);
     }
 
     pub fn roots(
@@ -665,6 +671,16 @@ mod tests {
         assert_eq!(root_a["/proj/a"]["2026-01-15"].input, 100);
         assert_eq!(root_b["/proj/b"]["2026-01-15"].input, 200);
         assert_eq!(root_a["/proj/a"]["2026-01-15"].lines_added, 5);
+    }
+
+    #[test]
+    fn remove_root_drops_only_that_root() {
+        let mut cache = Cache::new();
+        insert_entry(&mut cache, "real", "p", "2026-05-01", DayEntry { input: 1, ..Default::default() });
+        insert_entry(&mut cache, "backfill:stats-cache", "(historical)", "2026-01-01", DayEntry { input: 2, ..Default::default() });
+        cache.remove_root("backfill:stats-cache");
+        assert!(cache.get_root("real").is_some());
+        assert!(cache.get_root("backfill:stats-cache").is_none());
     }
 
     #[test]
