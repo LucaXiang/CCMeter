@@ -289,6 +289,15 @@ impl App {
         project_cwds_static(&self.config.groups, group_index)
     }
 
+    /// True when the cache holds synthetic backfill roots (history older than
+    /// the live JSONL window). Used to render a low-fidelity notice.
+    pub(crate) fn has_backfilled_history(&self) -> bool {
+        self.data
+            .merged_cache
+            .roots()
+            .any(|(root, _)| root.starts_with("backfill:"))
+    }
+
     fn recompute_tokens(&mut self) {
         let cwds_filter = self.project_cwds();
         let source_root = self.config.source_roots[self.source_index].as_deref();

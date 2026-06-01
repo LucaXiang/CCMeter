@@ -55,6 +55,8 @@ impl App {
         let cache_idx = (self.cache_load_state != crate::data::cache::CacheLoad::Fresh)
             .then(|| push(&mut constraints, Constraint::Length(4)));
         let content_idx = push(&mut constraints, Constraint::Min(1));
+        let note_idx = (matches!(self.view, View::Main) && self.has_backfilled_history())
+            .then(|| push(&mut constraints, Constraint::Length(1)));
         let footer_idx = push(&mut constraints, Constraint::Length(1));
 
         let outer = Layout::default()
@@ -63,6 +65,10 @@ impl App {
             .split(area);
 
         self.draw_footer(frame, outer[footer_idx]);
+
+        if let Some(idx) = note_idx {
+            self.draw_backfill_note(frame, outer[idx]);
+        }
 
         if let (Some(idx), Some(info)) = (update_idx, &self.update_info) {
             self.draw_update_banner(frame, outer[idx], info);
@@ -134,6 +140,16 @@ impl App {
         ))
         .alignment(Alignment::Center);
         frame.render_widget(footer, area);
+    }
+
+    fn draw_backfill_note(&self, frame: &mut Frame, area: Rect) {
+        let t = theme();
+        let note = Paragraph::new(Span::styled(
+            "ⓘ Older history is backfilled: token totals only (no per-project / line / model detail).",
+            Style::default().fg(t.text_dim),
+        ))
+        .alignment(Alignment::Center);
+        frame.render_widget(note, area);
     }
 
     fn draw_header(&self, frame: &mut Frame, top_cols: &[Rect]) {

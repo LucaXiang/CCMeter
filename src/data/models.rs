@@ -74,6 +74,27 @@ pub(crate) fn model_pricing(model: &str) -> (f64, f64, f64) {
         .unwrap_or(FALLBACK_PRICING)
 }
 
+/// Cost (USD) from delta token counts via the local pricing table.
+/// Mirrors Anthropic billing: fresh input at input_price, cache reads at
+/// cache_read_price, cache creation at input_price * 1.25, output at
+/// output_price. `input` is the total input (cache_read inclusive).
+pub(crate) fn cost_from_tokens(
+    model: &str,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+) -> f64 {
+    const CACHE_CREATION_MULTIPLIER: f64 = 1.25;
+    let (input_price, output_price, cache_read_price) = model_pricing(model);
+    let fresh_input = input.saturating_sub(cache_read);
+    (fresh_input as f64 * input_price
+        + cache_read as f64 * cache_read_price
+        + cache_creation as f64 * input_price * CACHE_CREATION_MULTIPLIER
+        + output as f64 * output_price)
+        / TOKENS_PER_MILLION
+}
+
 /// Normalize a full model ID to a short family name.
 pub(crate) fn normalize_model(model: &str) -> &'static str {
     if model.contains("opus") {
@@ -112,5 +133,25 @@ pub(crate) fn format_cost(c: f64) -> String {
         format!("${:.2}", c)
     } else {
         format!("¢{:.0}", c * 100.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cost_from_tokens_matches_pricing() {
+        // opus-4-6: input $5/M, output $25/M, cache_read $0.5/M,
+        // cache_creation = input * 1.25 = $6.25/M.
+        // fresh_input 500*5 + cache_read 500*0.5 + cache_creation 300*5*1.25
+        //   + output 200*25 = 2500 + 250 + 1875 + 5000 = 9625 micro-USD
+        let c = cost_from_tokens("claude-opus-4-6", 1000, 200, 500, 300);
+        assert!((c - 0.009625).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn cost_from_tokens_zero_is_zero() {
+        assert_eq!(cost_from_tokens("claude-opus-4-6", 0, 0, 0, 0), 0.0);
     }
 }
