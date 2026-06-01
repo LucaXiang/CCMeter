@@ -32,6 +32,16 @@ pub(crate) enum View {
     Settings(Box<SettingsState>),
 }
 
+/// A selectable source in the ⇧Tab cycle: a display name, the cache-root
+/// filter it applies, and the EventIndex root filter (the index is Claude-only,
+/// so a Codex view passes the codex root and gets empty index stats).
+#[derive(Clone)]
+pub(crate) struct SourceEntry {
+    pub(crate) name: String,
+    pub(crate) roots: crate::data::cache::RootFilter,
+    pub(crate) index_root: Option<String>,
+}
+
 pub(crate) struct CachedKpi {
     pub(crate) cost: f64,
     pub(crate) streak: u32,
@@ -94,8 +104,7 @@ pub(crate) struct AppConfig {
     pub(crate) groups: Vec<discovery::ProjectGroup>,
     pub(crate) raw_groups: Arc<Vec<discovery::ProjectGroup>>,
     pub(crate) session_map: Arc<HashMap<String, (String, String)>>,
-    pub(crate) source_names: Vec<String>,
-    pub(crate) source_roots: Vec<Option<String>>,
+    pub(crate) sources: Vec<SourceEntry>,
 }
 
 /// Pre-computed values for the current view (rebuilt when filters change).
@@ -184,7 +193,8 @@ impl App {
             };
         }
 
-        let (daily_tokens, thresholds) = compute_daily_and_thresholds(&merged_cache, None, None);
+        let (daily_tokens, thresholds) =
+            compute_daily_and_thresholds(&merged_cache, &cache::RootFilter::All, None);
         let minute_tokens = index.build_minute_tokens(None, None);
 
         let root_paths = sorted_root_paths(&root_cwd_map);
@@ -201,7 +211,10 @@ impl App {
 
         let mut overrides = Overrides::load();
         let groups = overrides::apply_overrides(&raw_groups, &mut overrides);
-        let (source_names, source_roots) = build_source_list(&root_cwd_map);
+        let has_codex = merged_cache
+            .roots()
+            .any(|(r, _)| r == crate::data::codex::CODEX_ROOT);
+        let sources = build_source_list(&root_cwd_map, has_codex);
         let source_index: usize = 0;
         let project_index: Option<usize> = None;
         let settings = Settings::load();
@@ -220,7 +233,8 @@ impl App {
             &groups,
             &merged_cache,
             &overrides,
-            source_roots[source_index].as_deref(),
+            &sources[source_index].roots,
+            sources[source_index].index_root.as_deref(),
             cwds_filter.as_deref(),
             time_filter,
         );
@@ -248,8 +262,7 @@ impl App {
                 groups,
                 raw_groups,
                 session_map,
-                source_names,
-                source_roots,
+                sources,
             },
             render,
             view: initial_view,
@@ -300,10 +313,10 @@ impl App {
 
     fn recompute_tokens(&mut self) {
         let cwds_filter = self.project_cwds();
-        let source_root = self.config.source_roots[self.source_index].as_deref();
+        let entry = self.config.sources[self.source_index].clone();
         let (d, t) = compute_daily_and_thresholds(
             &self.data.merged_cache,
-            source_root,
+            &entry.roots,
             cwds_filter.as_deref(),
         );
         self.data.daily_tokens = d;
@@ -311,13 +324,13 @@ impl App {
         self.data.minute_tokens = self
             .data
             .index
-            .build_minute_tokens(source_root, cwds_filter.as_deref());
+            .build_minute_tokens(entry.index_root.as_deref(), cwds_filter.as_deref());
         self.render_dirty = true;
     }
 
     fn recompute_render_cache(&mut self) {
         let cwds_filter = self.project_cwds();
-        let source_root = self.config.source_roots[self.source_index].as_deref();
+        let entry = self.config.sources[self.source_index].clone();
         let prev_display_order = std::mem::take(&mut self.render.display_order);
         self.render = build_render_cache(
             &self.data.daily_tokens,
@@ -326,7 +339,8 @@ impl App {
             &self.config.groups,
             &self.data.merged_cache,
             &self.config.overrides,
-            source_root,
+            &entry.roots,
+            entry.index_root.as_deref(),
             cwds_filter.as_deref(),
             self.time_filter,
         );
@@ -355,12 +369,11 @@ impl App {
     }
 
     fn apply_discovery_result(&mut self, result: DiscoveryResult) -> DiscoveryRefresh {
-        let selected_source_root = self
+        let selected_source_name = self
             .config
-            .source_roots
+            .sources
             .get(self.source_index)
-            .cloned()
-            .flatten();
+            .map(|s| s.name.clone());
         let selected_project_root = self
             .project_index
             .and_then(|i| self.render.display_order.get(i))
@@ -388,25 +401,29 @@ impl App {
         let raw_groups = Arc::new(raw_groups);
         let session_map = Arc::new(session_map);
         let groups = overrides::apply_overrides(&raw_groups, &mut self.config.overrides);
-        let (source_names, source_roots) = build_source_list(&root_cwd_map);
+        let has_codex = self
+            .data
+            .merged_cache
+            .roots()
+            .any(|(r, _)| r == crate::data::codex::CODEX_ROOT);
+        let sources = build_source_list(&root_cwd_map, has_codex);
 
         self.config.raw_groups = raw_groups;
         self.config.session_map = session_map;
         self.config.groups = groups;
-        self.config.source_names = source_names;
-        self.config.source_roots = source_roots;
+        self.config.sources = sources;
         self.data.oauth_credentials = fresh_credentials;
 
-        self.source_index = selected_source_root
+        self.source_index = selected_source_name
             .as_deref()
-            .and_then(|root| {
+            .and_then(|name| {
                 self.config
-                    .source_roots
+                    .sources
                     .iter()
-                    .position(|candidate| candidate.as_deref() == Some(root))
+                    .position(|candidate| candidate.name == name)
             })
             .unwrap_or(0)
-            .min(self.config.source_roots.len().saturating_sub(1));
+            .min(self.config.sources.len().saturating_sub(1));
 
         self.rate_tracking_selected = selected_tracking_root
             .as_deref()
@@ -633,7 +650,7 @@ impl App {
                     return true;
                 }
                 KeyCode::BackTab => {
-                    self.source_index = (self.source_index + 1) % self.config.source_names.len();
+                    self.source_index = (self.source_index + 1) % self.config.sources.len();
                     self.card_scroll = 0;
                     self.recompute_tokens();
                     return true;
@@ -821,7 +838,8 @@ fn build_render_cache(
     groups: &[discovery::ProjectGroup],
     merged_cache: &cache::Cache,
     overrides: &Overrides,
-    source_root: Option<&str>,
+    roots: &cache::RootFilter,
+    index_root: Option<&str>,
     project_cwds: Option<&[String]>,
     time_filter: TimeFilter,
 ) -> RenderCache {
@@ -841,7 +859,7 @@ fn build_render_cache(
     let date_filter = |d: NaiveDate| date_in_filter(d, time_filter, today_snap);
     let stats = index.build_model_stats(
         &cwd_to_root,
-        source_root,
+        index_root,
         &date_filter,
         project_cwds,
         time_filter.is_intraday(),
@@ -861,7 +879,7 @@ fn build_render_cache(
         groups,
         cache_ref,
         overrides,
-        source_root,
+        roots,
         date_filter,
         &stats.tokens,
         project_cwds,
@@ -968,10 +986,10 @@ fn spawn_discovery(tx: &mpsc::Sender<DiscoveryResult>) {
 
 fn compute_daily_and_thresholds(
     cache: &cache::Cache,
-    source_root: Option<&str>,
+    roots: &cache::RootFilter,
     project_cwds: Option<&[String]>,
 ) -> (DailyTokens, heatmap::Thresholds) {
-    let daily = cache::to_daily_tokens_filtered(cache, source_root, project_cwds);
+    let daily = cache::to_daily_tokens_filtered(cache, roots, project_cwds);
     let t = heatmap::Thresholds {
         input: heatmap::compute_thresholds(&daily.input),
         output: heatmap::compute_thresholds(&daily.output),
@@ -1004,18 +1022,51 @@ fn compute_range(
 
 fn build_source_list(
     root_map: &HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
-) -> (Vec<String>, Vec<Option<String>>) {
+    has_codex: bool,
+) -> Vec<SourceEntry> {
+    use crate::data::cache::RootFilter;
+    use crate::data::codex::CODEX_ROOT;
+
+    // Provider view: when Codex usage is present, expose exactly three
+    // provider-level sources instead of per-install-dir Claude roots.
+    if has_codex {
+        return vec![
+            SourceEntry {
+                name: "All".to_string(),
+                roots: RootFilter::All,
+                index_root: None,
+            },
+            SourceEntry {
+                name: "Claude Code".to_string(),
+                roots: RootFilter::Exclude(CODEX_ROOT.to_string()),
+                index_root: None,
+            },
+            SourceEntry {
+                name: "Codex".to_string(),
+                roots: RootFilter::Only(CODEX_ROOT.to_string()),
+                index_root: Some(CODEX_ROOT.to_string()),
+            },
+        ];
+    }
+
     let home = dirs::home_dir().unwrap_or_default();
 
     if root_map.len() <= 1 {
-        return (vec!["All".to_string()], vec![None]);
+        return vec![SourceEntry {
+            name: "All".to_string(),
+            roots: RootFilter::All,
+            index_root: None,
+        }];
     }
 
     let mut roots: Vec<&std::path::PathBuf> = root_map.keys().collect();
     roots.sort();
 
-    let mut names = vec!["All".to_string()];
-    let mut root_keys: Vec<Option<String>> = vec![None];
+    let mut sources = vec![SourceEntry {
+        name: "All".to_string(),
+        roots: RootFilter::All,
+        index_root: None,
+    }];
 
     for root in roots {
         let display: String = root
@@ -1025,9 +1076,13 @@ fn build_source_list(
             .trim_start_matches('/')
             .trim_end_matches("/projects")
             .to_string();
-        names.push(display);
-        root_keys.push(Some(root.to_string_lossy().to_string()));
+        let root_str = root.to_string_lossy().to_string();
+        sources.push(SourceEntry {
+            name: display,
+            roots: RootFilter::Only(root_str.clone()),
+            index_root: Some(root_str),
+        });
     }
 
-    (names, root_keys)
+    sources
 }

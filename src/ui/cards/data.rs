@@ -4,7 +4,7 @@ use chrono::NaiveDate;
 
 use crate::config::discovery::ProjectGroup;
 use crate::config::overrides::Overrides;
-use crate::data::cache::{Cache, DayEntry};
+use crate::data::cache::{Cache, DayEntry, RootFilter};
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -45,7 +45,7 @@ pub fn build_cards(
     groups: &[ProjectGroup],
     cache: &Cache,
     overrides: &Overrides,
-    source_root: Option<&str>,
+    roots: &RootFilter,
     date_filter: impl Fn(NaiveDate) -> bool,
     model_tokens: &HashMap<(String, String), u64>,
     project_cwds: Option<&[String]>,
@@ -88,7 +88,7 @@ pub fn build_cards(
         let mut tokens_out_by_day: HashMap<NaiveDate, u64> = HashMap::new();
         let mut cached_active_minutes: u64 = 0;
 
-        for (_root, _cwd, date_str, entry) in cache.iter_filtered(source_root, Some(&cwds)) {
+        for (_root, _cwd, date_str, entry) in cache.iter_filtered(roots, Some(&cwds)) {
             let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
                 continue;
             };

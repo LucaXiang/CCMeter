@@ -11,6 +11,27 @@ use super::tokens::DailyTokens;
 // Types
 // ---------------------------------------------------------------------------
 
+/// Which cache source roots a view includes.
+#[derive(Debug, Clone)]
+pub enum RootFilter {
+    /// Every root.
+    All,
+    /// Every root except this one (used for "Claude Code" = all-but-codex).
+    Exclude(String),
+    /// Only this exact root (used for "Codex", or a single Claude install dir).
+    Only(String),
+}
+
+impl RootFilter {
+    pub fn matches(&self, root: &str) -> bool {
+        match self {
+            RootFilter::All => true,
+            RootFilter::Exclude(r) => root != r,
+            RootFilter::Only(r) => root == r,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DayEntry {
     #[serde(default)]
@@ -125,11 +146,11 @@ impl Cache {
     /// Iterate all (root, cwd, date_str, entry) tuples, optionally filtered by root and/or cwds.
     pub fn iter_filtered<'a>(
         &'a self,
-        source_root: Option<&'a str>,
+        roots: &'a RootFilter,
         project_cwds: Option<&'a [String]>,
     ) -> impl Iterator<Item = (&'a str, &'a str, &'a str, &'a DayEntry)> {
         self.0.iter().flat_map(move |(root, cwd_map)| {
-            let root_matches = source_root.is_none_or(|sr| sr == root);
+            let root_matches = roots.matches(root);
             let iter: Box<dyn Iterator<Item = _> + 'a> = if root_matches {
                 Box::new(cwd_map.iter().flat_map(move |(cwd, days)| {
                     let cwd_matches = project_cwds.is_none_or(|cwds| cwds.contains(cwd));
@@ -405,11 +426,11 @@ fn accumulate_days(daily: &mut DailyTokens, date: NaiveDate, entry: &DayEntry) {
 /// Convert the cache into DailyTokens, optionally filtered by root and/or cwds.
 pub fn to_daily_tokens_filtered(
     cache: &Cache,
-    source_root: Option<&str>,
+    roots: &RootFilter,
     project_cwds: Option<&[String]>,
 ) -> DailyTokens {
     let mut daily = DailyTokens::default();
-    for (_root, _cwd, date_str, entry) in cache.iter_filtered(source_root, project_cwds) {
+    for (_root, _cwd, date_str, entry) in cache.iter_filtered(roots, project_cwds) {
         let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
             continue;
         };
@@ -563,7 +584,7 @@ mod tests {
             },
         );
 
-        let daily = to_daily_tokens_filtered(&cache, None, None);
+        let daily = to_daily_tokens_filtered(&cache, &RootFilter::All, None);
         let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
         assert_eq!(daily.input[&date], 300);
         assert_eq!(daily.lines_accepted[&date], 30);
@@ -595,8 +616,10 @@ mod tests {
             },
         );
 
-        let daily_a = to_daily_tokens_filtered(&cache, Some("root_a"), None);
-        let daily_b = to_daily_tokens_filtered(&cache, Some("root_b"), None);
+        let only_a = RootFilter::Only("root_a".to_string());
+        let only_b = RootFilter::Only("root_b".to_string());
+        let daily_a = to_daily_tokens_filtered(&cache, &only_a, None);
+        let daily_b = to_daily_tokens_filtered(&cache, &only_b, None);
         let date = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
         assert_eq!(daily_a.input[&date], 100);
         assert_eq!(daily_b.input[&date], 200);
@@ -616,7 +639,7 @@ mod tests {
             },
         );
 
-        let daily = to_daily_tokens_filtered(&cache, None, None);
+        let daily = to_daily_tokens_filtered(&cache, &RootFilter::All, None);
         assert!(daily.input.is_empty());
     }
 

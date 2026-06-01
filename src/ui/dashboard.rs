@@ -26,12 +26,29 @@ impl App {
                 return;
             }
             let tick = (self.start_time.elapsed().as_millis() / 150) as usize;
+            // Rate-tracking maps a credential's filesystem source_root to a
+            // display name. The source SELECTOR no longer stores those as
+            // parallel vecs, so rebuild them here from the per-install-dir
+            // (`Only(path)`) entries; provider entries (All/Exclude/Codex)
+            // don't correspond to credential paths and are skipped (the
+            // helper falls back to the last path segment).
+            let (rt_names, rt_roots): (Vec<String>, Vec<Option<String>>) = self
+                .config
+                .sources
+                .iter()
+                .filter_map(|s| {
+                    s.index_root
+                        .as_ref()
+                        .filter(|r| *r != crate::data::codex::CODEX_ROOT)
+                        .map(|r| (s.name.clone(), Some(r.clone())))
+                })
+                .unzip();
             rate_tracking::render(
                 frame,
                 area,
                 &self.data.rate_limit_hits,
-                &self.config.source_names,
-                &self.config.source_roots,
+                &rt_names,
+                &rt_roots,
                 &self.data.oauth_credentials,
                 Some(self.rate_tracking_selected),
                 &self.data.index,
@@ -191,9 +208,9 @@ impl App {
         {
             let src_labels: Vec<&str> = self
                 .config
-                .source_names
+                .sources
                 .iter()
-                .map(|s| s.as_str())
+                .map(|s| s.name.as_str())
                 .collect();
             let spans = scrollable_tabs(
                 &src_labels,
