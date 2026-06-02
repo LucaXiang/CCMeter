@@ -146,7 +146,7 @@ pub fn normalize_remote_url(url: &str) -> String {
     //     (`host:8080/org/repo`); that `:port` is not a path segment — drop it.
     let s = if had_scheme {
         // Remove optional `:port` between host and the first `/`.
-        let s = if let Some(slash) = s.find('/') {
+        if let Some(slash) = s.find('/') {
             let host_part = &s[..slash];
             let path_part = &s[slash..];
             if let Some(colon) = host_part.rfind(':') {
@@ -161,8 +161,7 @@ pub fn normalize_remote_url(url: &str) -> String {
             }
         } else {
             s.to_string()
-        };
-        s
+        }
     } else {
         // SSH shorthand: replace the first `:` (host:path) with `/`.
         s.replacen(':', "/", 1)
