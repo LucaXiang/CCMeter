@@ -1,6 +1,6 @@
 # CCMeter 接力文档 — 统一项目卡(Claude + Codex)
 
-**当前 HEAD**: `074ce8a` (已 merge 进 `main` 并 push 到 `fork` = git@github.com:LucaXiang/CCMeter.git)
+**当前 HEAD**: `c3c2e18` (已 merge 进 `main` 并 push 到 `fork` = git@github.com:LucaXiang/CCMeter.git)
 **SPEC**: `docs/superpowers/specs/2026-06-02-unified-project-cards-design.md`
 **计划**: `docs/superpowers/plans/2026-06-02-unified-project-cards-phase1.md`
 
@@ -17,10 +17,11 @@
 
 **关键不变量**:cache/index 里 Codex 仍挂 `CODEX_ROOT`(= provider 维度,源 tab 靠它筛),**无日 cache schema bump**;卡片按 group 的 cwd 集合 `iter_filtered` 取数,同仓库 Claude+Codex 自然合并。
 
-## 待做
+## 已完成 — Phase 2：卡面 provider 拆分
 
-### Phase 2：卡面 provider 拆分
-`build_cards`(`src/ui/cards/data.rs`)累加时按 `root == CODEX_ROOT` 拆 `(claude, codex)`;`ProjectCard` 加 `cost_claude/cost_codex`;卡面渲染迷你拆分(如 `CC $30 · CX $12`)。`ProjectSource.provider` 字段已就位(现 `#[allow(dead_code)]`,Phase 2 的读取者)。
+计划 `docs/superpowers/plans/2026-06-02-unified-project-cards-phase2.md`。`ProjectCard` 加 `cost_claude/cost_codex`,`build_cards` 循环按 `root == CODEX_ROOT` 拆(两者和 = total_cost);`render_card` line 1 成本后渲染 ` cc $X · cx $Y`(仅 mixed 卡显示,宽度守卫,padding 两处已补 `split_str.len()`)。`ProjectSource.provider` 的 `#[allow(dead_code)]` 仍在(Phase 2 读的是 cache root,不是该字段;Phase 3 若需要再用)。
+
+## 待做
 
 ### Phase 3：Recent sessions(含标题)= 原 #1 泛化到两端
 - Codex:`CodexDelta` 加 `session_id`,按 session 聚合 tokens/cost/last_date;`thread_name` 取 `~/.codex/session_index.jsonl`。
@@ -47,4 +48,4 @@ cargo +1.95.0 clippy --bin ccmeter 2>&1 | rg 'generated'         # 11 warnings(b
 - **push**: `git push fork main`(origin=hmenzagh 上游不可推)。
 
 ## 下一 session 第一句
-> 读 `RESUME.md` 和 spec/plan,实现 Phase 2(卡面 provider 拆分):`build_cards` 按 `CODEX_ROOT` 拆 `cost_claude/cost_codex`,`ProjectCard` 加字段,卡面渲染迷你拆分条。TDD,`cargo +1.95.0`,完成后原子替换二进制并 `git push fork main`。
+> 读 `RESUME.md` 和 spec,实现 Phase 3(Recent sessions 含标题):Codex `CodexDelta` 加 `session_id` 按 session 聚合 + `session_index.jsonl` 取 `thread_name`;Claude 按 session 文件聚合 + `ai-title` 标题;经 cwd→group 归卡,卡片明细视图列 `标题·tokens·成本·日期·来源(CC/CX)`。先写 Phase 3 计划(writing-plans)再子代理 TDD 执行,`cargo +1.95.0`,完成后原子替换二进制并 `git push fork main`。
