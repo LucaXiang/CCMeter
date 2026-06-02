@@ -72,6 +72,7 @@ pub struct CompactEntry {
 // Combined model stats result
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 pub struct ModelStats {
     pub tokens: HashMap<(String, String), u64>,
     pub daily_costs: HashMap<(String, String), HashMap<NaiveDate, f64>>,
@@ -213,6 +214,9 @@ impl EventIndex {
         project_cwds: Option<&[String]>,
     ) -> MinuteTokens {
         let root_filter = source_root.and_then(|sr| self.root_intern.get(sr).copied());
+        if source_root.is_some() && root_filter.is_none() {
+            return MinuteTokens::default();
+        }
         let cwd_filter = project_cwds.map(|cwds| self.cwd_set(cwds));
 
         let mut mt = MinuteTokens::default();
@@ -246,6 +250,9 @@ impl EventIndex {
         subday_start: Option<(NaiveDate, u16)>,
     ) -> ModelStats {
         let root_filter = source_root.and_then(|sr| self.root_intern.get(sr).copied());
+        if source_root.is_some() && root_filter.is_none() {
+            return ModelStats::default();
+        }
         let cwd_filter = project_cwds.map(|cwds| self.cwd_set(cwds));
 
         // Map cwd_idx → root_key_idx so multiple cwds sharing a root_key aggregate correctly.

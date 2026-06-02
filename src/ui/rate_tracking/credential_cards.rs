@@ -8,7 +8,7 @@ use super::credential_status::{
     credential_status_color, credential_status_detail, credential_status_message,
 };
 use super::gradient::{gradient_bar_line, util_color};
-use super::helpers::{format_reset, source_color_index, source_display_name};
+use super::helpers::{credential_display_name, format_reset, source_color_index};
 
 pub(super) fn count_card_height(credentials: &[OAuthCredential]) -> u16 {
     if credentials.is_empty() {
@@ -40,8 +40,6 @@ pub(super) fn render_credential_cards(
     frame: &mut Frame,
     area: Rect,
     credentials: &[OAuthCredential],
-    source_names: &[String],
-    source_roots: &[Option<String>],
     selected: Option<usize>,
     credential_roots: &[String],
 ) {
@@ -80,15 +78,7 @@ pub(super) fn render_credential_cards(
 
     for (i, cred) in credentials.iter().enumerate() {
         let is_selected = selected == Some(i);
-        render_card(
-            frame,
-            cols[i],
-            cred,
-            source_names,
-            source_roots,
-            credential_roots,
-            is_selected,
-        );
+        render_card(frame, cols[i], cred, credential_roots, is_selected);
     }
 }
 
@@ -96,14 +86,12 @@ fn render_card(
     frame: &mut Frame,
     area: Rect,
     cred: &OAuthCredential,
-    source_names: &[String],
-    source_roots: &[Option<String>],
     credential_roots: &[String],
     is_selected: bool,
 ) {
     let t = theme();
     let root_str = cred.source_root.to_string_lossy().to_string();
-    let name = source_display_name(&root_str, source_names, source_roots);
+    let name = credential_display_name(&root_str);
     let color_idx = source_color_index(&root_str, credential_roots);
     let color = t.rainbow[color_idx % t.rainbow.len()];
 

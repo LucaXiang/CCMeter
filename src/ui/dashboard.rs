@@ -30,8 +30,6 @@ impl App {
                 frame,
                 area,
                 &self.data.rate_limit_hits,
-                &self.config.source_names,
-                &self.config.source_roots,
                 &self.data.oauth_credentials,
                 Some(self.rate_tracking_selected),
                 &self.data.index,
@@ -191,9 +189,9 @@ impl App {
         {
             let src_labels: Vec<&str> = self
                 .config
-                .source_names
+                .sources
                 .iter()
-                .map(|s| s.as_str())
+                .map(|s| s.name.as_str())
                 .collect();
             let spans = scrollable_tabs(
                 &src_labels,

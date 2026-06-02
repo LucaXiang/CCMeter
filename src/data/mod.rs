@@ -1,4 +1,5 @@
 pub mod backfill;
+pub mod codex;
 pub mod cache;
 pub mod hit_history;
 pub mod index;

@@ -13,18 +13,10 @@ pub(super) fn blinking_dot_span(tick: usize, color: Color) -> Span<'static> {
     }
 }
 
-pub(super) fn source_display_name<'a>(
-    source_root: &'a str,
-    source_names: &'a [String],
-    source_roots: &[Option<String>],
-) -> &'a str {
-    for (i, root) in source_roots.iter().enumerate() {
-        if let Some(r) = root
-            && r == source_root
-        {
-            return &source_names[i];
-        }
-    }
+/// Human-readable label for a credential, derived directly from its source
+/// root path (the last meaningful path segment). Independent of the source
+/// selector so it stays correct in the provider view.
+pub(super) fn credential_display_name(source_root: &str) -> &str {
     source_root
         .rsplit('/')
         .find(|s| !s.is_empty() && *s != "projects")

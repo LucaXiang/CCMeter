@@ -10,15 +10,14 @@ use super::credential_status::{
 };
 use super::forecast::ForecastSnapshot;
 use super::helpers::{
-    blinking_dot_span, format_duration_label, format_rate_label, source_display_name, truncate_text,
+    blinking_dot_span, credential_display_name, format_duration_label, format_rate_label,
+    truncate_text,
 };
 
 pub(super) fn render_live_summary(
     frame: &mut Frame,
     area: Rect,
     selected_cred: Option<&OAuthCredential>,
-    source_names: &[String],
-    source_roots: &[Option<String>],
     forecast: Option<&ForecastSnapshot>,
     tick: usize,
 ) {
@@ -57,7 +56,7 @@ pub(super) fn render_live_summary(
     };
 
     let root = cred.source_root.to_string_lossy().to_string();
-    let source = source_display_name(&root, source_names, source_roots);
+    let source = credential_display_name(&root);
     let sub = cred.subscription_type.as_deref().unwrap_or("?");
     let width = inner.width as usize;
     let source_label = truncate_text(&format!("{} ({})", source, sub), width.max(8));

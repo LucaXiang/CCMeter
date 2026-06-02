@@ -63,7 +63,7 @@ pub struct BackfillSummary {
 /// Earliest date held under a real (non-`backfill:`) source root.
 fn real_root_min_date(cache: &Cache) -> Option<NaiveDate> {
     cache
-        .iter_filtered(None, None)
+        .iter_filtered(&crate::data::cache::RootFilter::All, None)
         .filter(|(root, _, _, _)| !root.starts_with("backfill:"))
         .filter_map(|(_, _, date, _)| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
         .min()
