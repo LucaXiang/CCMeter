@@ -112,7 +112,9 @@ pub(crate) fn normalize_model(model: &str) -> &'static str {
 
 /// Format a token count as a human-readable string (e.g. "1.2M", "450K", "99").
 pub(crate) fn format_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
+    if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / TOKENS_PER_MILLION)
     } else if n >= 1_000 {
         format!("{:.1}K", n as f64 / 1_000.0)
@@ -155,6 +157,14 @@ mod tests {
     #[test]
     fn cost_from_tokens_zero_is_zero() {
         assert_eq!(cost_from_tokens("claude-opus-4-6", 0, 0, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn format_tokens_uses_billions() {
+        assert_eq!(format_tokens(24_400_000_000), "24.4B");
+        assert_eq!(format_tokens(1_000_000_000), "1.0B");
+        // Just under a billion stays in millions.
+        assert_eq!(format_tokens(999_000_000), "999.0M");
     }
 
     #[test]
