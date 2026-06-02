@@ -3,6 +3,13 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Which provider produced this project source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Claude,
+    Codex,
+}
+
 /// A discovered Claude Code project directory with its JSONL session files.
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
@@ -16,6 +23,8 @@ pub struct ProjectSource {
     pub cwd: Option<String>,
     /// Which Claude root this came from (e.g. `~/.claude/projects`).
     pub source_root: PathBuf,
+    /// Which provider produced this source (Claude or Codex).
+    pub provider: Provider,
 }
 
 impl ProjectSource {
@@ -151,6 +160,7 @@ fn discover_sources() -> Vec<ProjectSource> {
                 session_files,
                 cwd,
                 source_root: root.clone(),
+                provider: Provider::Claude,
             });
         }
     }
@@ -565,6 +575,19 @@ pub fn derive_group_name(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_source_defaults_to_claude_provider() {
+        let s = ProjectSource {
+            dir_name: "d".into(),
+            path: PathBuf::from("/p"),
+            session_files: vec![],
+            cwd: Some("/p".into()),
+            source_root: PathBuf::from("/r"),
+            provider: Provider::Claude,
+        };
+        assert_eq!(s.provider, Provider::Claude);
+    }
 
     #[test]
     fn test_heuristic_root_worktrees_segment() {
