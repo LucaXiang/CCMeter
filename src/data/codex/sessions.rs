@@ -58,9 +58,140 @@ pub fn collect_codex_session_meta() -> Vec<CodexSessionMeta> {
         .collect()
 }
 
+// ── Thread-name index + session summaries ────────────────────────────────────
+
+use std::collections::HashMap;
+
+use crate::config::discovery::Provider;
+use crate::data::models::cost_from_tokens;
+use crate::data::sessions::{short_id, SessionSummary};
+
+#[derive(serde::Deserialize)]
+struct IndexLine {
+    id: Option<String>,
+    thread_name: Option<String>,
+}
+
+/// Parse `~/.codex/session_index.jsonl` contents → (session id → thread_name).
+pub fn parse_thread_names(raw: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for line in raw.lines() {
+        let Ok(rec) = serde_json::from_str::<IndexLine>(line) else {
+            continue;
+        };
+        if let (Some(id), Some(name)) = (rec.id, rec.thread_name) {
+            if !name.is_empty() {
+                out.insert(id, name);
+            }
+        }
+    }
+    out
+}
+
+/// Read the session-name index from disk (empty if absent).
+pub fn read_thread_names() -> HashMap<String, String> {
+    let Some(home) = dirs::home_dir() else {
+        return HashMap::new();
+    };
+    std::fs::read_to_string(home.join(".codex").join("session_index.jsonl"))
+        .map(|raw| parse_thread_names(&raw))
+        .unwrap_or_default()
+}
+
+/// Aggregate Codex deltas into one summary per session_id. `tokens` is
+/// input+output (matching the per-model breakdown); cost reconstructs the
+/// cache-inclusive input like the cache/index path. Title = thread_name, else
+/// a short id fallback. Deltas with an empty session_id are skipped.
+pub fn codex_session_summaries(
+    deltas: &[crate::data::codex::CodexDelta],
+    names: &HashMap<String, String>,
+) -> Vec<SessionSummary> {
+    struct Acc {
+        tokens: u64,
+        cost: f64,
+        last: chrono::NaiveDate,
+        cwd: String,
+    }
+    let mut by_sid: HashMap<&str, Acc> = HashMap::new();
+    for d in deltas {
+        if d.session_id.is_empty() {
+            continue;
+        }
+        let cost = cost_from_tokens(&d.model, d.input + d.cache_read, d.output, d.cache_read, 0);
+        let acc = by_sid.entry(d.session_id.as_str()).or_insert(Acc {
+            tokens: 0,
+            cost: 0.0,
+            last: d.date,
+            cwd: d.cwd.clone(),
+        });
+        acc.tokens += d.input + d.output;
+        acc.cost += cost;
+        if d.date > acc.last {
+            acc.last = d.date;
+        }
+    }
+    by_sid
+        .into_iter()
+        .map(|(sid, acc)| SessionSummary {
+            title: names
+                .get(sid)
+                .cloned()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| short_id(sid)),
+            provider: Provider::Codex,
+            cwd: acc.cwd,
+            tokens: acc.tokens,
+            cost: acc.cost,
+            last_date: acc.last,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_thread_names_from_index() {
+        let raw = [
+            r#"{"id":"uuid-1","thread_name":"了解项目","updated_at":"2026-05-02T14:25:04Z"}"#,
+            r#"{"id":"uuid-2","thread_name":"修复金额类型","updated_at":"2026-05-02T16:49:41Z"}"#,
+        ]
+        .join("\n");
+        let names = parse_thread_names(&raw);
+        assert_eq!(names.get("uuid-1").map(String::as_str), Some("了解项目"));
+        assert_eq!(names.get("uuid-2").map(String::as_str), Some("修复金额类型"));
+    }
+
+    #[test]
+    fn summarizes_codex_sessions_with_thread_name() {
+        use crate::data::codex::CodexDelta;
+        use chrono::NaiveDate;
+        let d = |sid: &str, day: u32, input: u64, out: u64| CodexDelta {
+            cwd: "/p/crab".into(),
+            session_id: sid.into(),
+            date: NaiveDate::from_ymd_opt(2026, 5, day).unwrap(),
+            minute: 0,
+            model: "gpt-5.5".into(),
+            input,
+            cache_read: 1000,
+            output: out,
+        };
+        let deltas = vec![d("uuid-1", 4, 100, 50), d("uuid-1", 6, 10, 5), d("uuid-2", 5, 20, 10)];
+        let mut names = std::collections::HashMap::new();
+        names.insert("uuid-1".to_string(), "了解项目".to_string());
+        let out = codex_session_summaries(&deltas, &names);
+        let s1 = out.iter().find(|s| s.title == "了解项目").expect("named");
+        assert_eq!(s1.provider, crate::config::discovery::Provider::Codex);
+        assert_eq!(s1.cwd, "/p/crab");
+        assert_eq!(s1.tokens, 165, "input+output across deltas");
+        assert!(s1.cost > 0.0, "priced via cost_from_tokens (cache-inclusive)");
+        assert_eq!(s1.last_date, NaiveDate::from_ymd_opt(2026, 5, 6).unwrap());
+        // uuid-2 has no thread name → non-empty fallback label.
+        assert!(out
+            .iter()
+            .any(|s| s.cwd == "/p/crab" && s.title != "了解项目" && !s.title.is_empty()));
+    }
 
     #[test]
     fn parses_cwd_and_git_repository_url() {
