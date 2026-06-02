@@ -30,10 +30,10 @@ pub fn from_lang_str(s: &str) -> Lang {
 
 pub fn detect() -> Lang {
     for var in ["CCMETER_LANG", "LC_ALL", "LANG"] {
-        if let Ok(v) = std::env::var(var) {
-            if !v.is_empty() {
-                return from_lang_str(&v);
-            }
+        if let Ok(v) = std::env::var(var)
+            && !v.is_empty()
+        {
+            return from_lang_str(&v);
         }
     }
     Lang::En
@@ -222,24 +222,20 @@ fn zh(en: &'static str) -> &'static str {
 mod tests {
     use super::*;
 
+    // `LANG` is a process-global, so the language-dependent assertions live in a
+    // SINGLE test that sets and checks sequentially. Splitting them across tests
+    // races under the default parallel test runner (one test's `set_lang` would
+    // clobber another's assertion).
     #[test]
-    fn t_returns_english_under_en() {
+    fn lang_global_switch_translates_and_falls_back() {
         set_lang(Lang::En);
-        assert_eq!(t(" Cost USD "), " Cost USD ");
-    }
+        assert_eq!(t(" Cost USD "), " Cost USD ", "English returns input verbatim");
 
-    #[test]
-    fn t_translates_under_zh() {
         set_lang(Lang::Zh);
-        assert_eq!(t(" Cost USD "), " 费用 USD ");
-        set_lang(Lang::En); // reset for other tests
-    }
+        assert_eq!(t(" Cost USD "), " 费用 USD ", "Chinese translates a known key");
+        assert_eq!(t("zzz-not-a-key"), "zzz-not-a-key", "unknown key falls back to input");
 
-    #[test]
-    fn t_falls_back_to_input_for_unknown() {
-        set_lang(Lang::Zh);
-        assert_eq!(t("zzz-not-a-key"), "zzz-not-a-key");
-        set_lang(Lang::En); // reset
+        set_lang(Lang::En); // restore default for any later code
     }
 
     #[test]
