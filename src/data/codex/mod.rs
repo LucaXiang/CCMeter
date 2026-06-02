@@ -10,6 +10,9 @@ use chrono::NaiveDate;
 pub struct CodexDelta {
     pub cwd: String,
     pub date: NaiveDate,
+    /// Local minute-of-day (0..1440) of the token_count event, so the delta
+    /// can be folded into the minute-keyed [`EventIndex`] for intraday views.
+    pub minute: u16,
     pub model: String,
     pub input: u64,
     pub cache_read: u64,
@@ -27,15 +30,15 @@ use crate::data::models::cost_from_tokens;
 /// Synthetic source root holding all Codex usage.
 pub const CODEX_ROOT: &str = "codex";
 
-/// Discover + parse all Codex sessions and aggregate into a cache fragment
-/// under `CODEX_ROOT`, plus the set of cwds seen (for the source selector).
-pub fn load_codex_cache() -> (Cache, HashSet<String>) {
-    let files = discover_session_files();
-    let deltas: Vec<CodexDelta> = files
+/// Discover and parse every Codex session file into per-turn deltas. Returned
+/// to the caller so the same parse feeds both the daily cache (via
+/// [`aggregate`]) and the [`EventIndex`](crate::data::index::EventIndex) (via
+/// `fold_codex`) without parsing the 500+ session files twice.
+pub fn collect_codex_deltas() -> Vec<CodexDelta> {
+    discover_session_files()
         .par_iter()
         .flat_map(|f| parser::parse_codex_file(f))
-        .collect();
-    aggregate(deltas)
+        .collect()
 }
 
 fn discover_session_files() -> Vec<PathBuf> {
@@ -80,7 +83,9 @@ fn collect_jsonl(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-fn aggregate(deltas: Vec<CodexDelta>) -> (Cache, HashSet<String>) {
+/// Aggregate per-turn deltas into a daily cache fragment under `CODEX_ROOT`,
+/// plus the set of cwds seen (for the source selector).
+pub(crate) fn aggregate(deltas: &[CodexDelta]) -> (Cache, HashSet<String>) {
     let mut cache = Cache::new();
     let mut cwds = HashSet::new();
     for d in deltas {
@@ -110,10 +115,10 @@ mod tests {
     #[test]
     fn aggregates_deltas_into_cache_under_codex_root() {
         let deltas = vec![
-            CodexDelta { cwd: "/p".into(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), model: "gpt-5.5".into(), input: 10, cache_read: 100, output: 5 },
-            CodexDelta { cwd: "/p".into(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), model: "gpt-5.5".into(), input: 20, cache_read: 0, output: 15 },
+            CodexDelta { cwd: "/p".into(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), minute: 0, model: "gpt-5.5".into(), input: 10, cache_read: 100, output: 5 },
+            CodexDelta { cwd: "/p".into(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), minute: 0, model: "gpt-5.5".into(), input: 20, cache_read: 0, output: 15 },
         ];
-        let (cache, cwds) = aggregate(deltas);
+        let (cache, cwds) = aggregate(&deltas);
         let root = cache.get_root(CODEX_ROOT).unwrap();
         let e = &root["/p"]["2026-05-04"];
         assert_eq!(e.input, 30);
@@ -133,12 +138,13 @@ mod tests {
         let deltas = vec![CodexDelta {
             cwd: "/p".into(),
             date,
+            minute: 0,
             model: "gpt-5.5".into(),
             input: 1000,
             cache_read: 4000,
             output: 200,
         }];
-        let (cache, _) = aggregate(deltas);
+        let (cache, _) = aggregate(&deltas);
         let e = &cache.get_root(CODEX_ROOT).unwrap()["/p"]["2026-05-04"];
         let expected = cost_from_tokens("gpt-5.5", 1000 + 4000, 200, 4000, 0);
         assert!((e.cost - expected).abs() < 1e-12, "got {}, want {}", e.cost, expected);

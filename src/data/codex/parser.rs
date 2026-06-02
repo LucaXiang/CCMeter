@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, NaiveDate, Timelike};
 use serde::Deserialize;
 
 use super::CodexDelta;
@@ -127,10 +127,13 @@ pub(crate) fn parse_codex_str(raw: &str, _session_file: &str) -> Vec<CodexDelta>
                 let Ok(parsed) = DateTime::parse_from_rfc3339(ts) else {
                     continue;
                 };
-                let date: NaiveDate = parsed.with_timezone(&chrono::Local).date_naive();
+                let local = parsed.with_timezone(&chrono::Local);
+                let date: NaiveDate = local.date_naive();
+                let minute = local.hour() as u16 * 60 + local.minute() as u16;
                 out.push(CodexDelta {
                     cwd: cwd.clone(),
                     date,
+                    minute,
                     model: model.clone(),
                     // Codex reports cache-inclusive input (cached ⊆ input);
                     // store the fresh, cache-exclusive portion so `input`
@@ -195,6 +198,25 @@ mod tests {
         assert_eq!(total_in, 72, "fresh = 60 + 12");
         assert_eq!(total_cr, 48);
         assert_eq!(total_out, 52);
+    }
+
+    #[test]
+    fn captures_minute_of_day_from_timestamp() {
+        use chrono::Timelike;
+        let ts = "2026-05-04T10:37:00.000Z";
+        let raw = lines(&[
+            r#"{"type":"session_meta","timestamp":"2026-05-04T10:00:00.000Z","payload":{"cwd":"/p"}}"#,
+            r#"{"type":"turn_context","timestamp":"2026-05-04T10:00:01.000Z","payload":{"model":"gpt-5.5"}}"#,
+            &format!(r#"{{"type":"event_msg","timestamp":"{ts}","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":50,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":60}}}}}}}}"#),
+        ]);
+        let out = parse_codex_str(&raw, "f.jsonl");
+        // Compare against the same Local conversion the parser uses so the
+        // assertion is timezone-independent.
+        let dt = DateTime::parse_from_rfc3339(ts)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        let expected = dt.hour() as u16 * 60 + dt.minute() as u16;
+        assert_eq!(out[0].minute, expected);
     }
 
     #[test]

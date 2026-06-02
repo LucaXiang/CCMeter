@@ -2,42 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, Timelike};
 
-use super::models::{OUTPUT_COST_WEIGHT, PerModelUsage, normalize_model};
+use super::models::{OUTPUT_COST_WEIGHT, PerModelUsage, model_breakdown_label};
 use super::parser::Event;
 use super::tokens::MinuteTokens;
-
-// ---------------------------------------------------------------------------
-// Model enum — 4 variants, stored as u8
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum ModelId {
-    Opus = 0,
-    Sonnet = 1,
-    Haiku = 2,
-    Other = 3,
-}
-
-impl ModelId {
-    fn from_raw(model: &str) -> Self {
-        match normalize_model(model) {
-            "opus" => Self::Opus,
-            "sonnet" => Self::Sonnet,
-            "haiku" => Self::Haiku,
-            _ => Self::Other,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Opus => "opus",
-            Self::Sonnet => "sonnet",
-            Self::Haiku => "haiku",
-            Self::Other => "other",
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Compact pre-aggregated entry
@@ -46,15 +13,14 @@ impl ModelId {
 /// One record per unique (root, cwd, model_idx, date, minute) combination.
 ///
 /// `model_idx` points into `EventIndex::models` for the full model string
-/// (e.g. "claude-opus-4-6-...") so per-entry pricing stays precise. `model`
-/// is the coarse family (Opus/Sonnet/Haiku/Other) derived from that string
-/// for legacy aggregation paths.
+/// (e.g. "claude-opus-4-6-...") so per-entry pricing stays precise. The coarse
+/// family (opus/sonnet/haiku) and the per-provider breakdown label are derived
+/// on demand from that string via `model_breakdown_label`.
 #[derive(Debug, Clone)]
 pub struct CompactEntry {
     pub root_idx: u16,
     pub cwd_idx: u16,
     pub model_idx: u16,
-    pub model: ModelId,
     pub date: NaiveDate,
     pub minute: u16,
     pub input_tokens: u64,
@@ -167,17 +133,10 @@ impl EventIndex {
         let entries: Vec<CompactEntry> = agg
             .into_iter()
             .map(|((root_idx, cwd_idx, model_idx, date, minute), a)| {
-                let model_str = &models[model_idx as usize];
-                let model = if model_str.is_empty() {
-                    ModelId::Other
-                } else {
-                    ModelId::from_raw(model_str)
-                };
                 CompactEntry {
                     root_idx,
                     cwd_idx,
                     model_idx,
-                    model,
                     date,
                     minute,
                     input_tokens: a.input,
@@ -200,6 +159,91 @@ impl EventIndex {
             root_intern,
             cwd_intern,
             entries,
+        }
+    }
+
+    /// Fold OpenAI Codex per-turn deltas into the index under [`CODEX_ROOT`]
+    /// so Codex usage participates in the same per-model / per-window queries
+    /// as Claude (rate-tracking breakdown, dashboard model stats). Codex models
+    /// keep their specific name (`gpt-5.5`, `gpt-5.3-codex`) via `model_idx`;
+    /// `ModelId` stays `Other` since the coarse family is meaningless for
+    /// non-Claude providers. Deltas are aggregated by (cwd, model, date,
+    /// minute) to match Claude's per-minute granularity. `d.input` is already
+    /// fresh (cache-exclusive); cost reconstructs the cache-inclusive input.
+    pub fn fold_codex(&mut self, deltas: &[crate::data::codex::CodexDelta]) {
+        use crate::data::codex::CODEX_ROOT;
+        use crate::data::models::cost_from_tokens;
+        if deltas.is_empty() {
+            return;
+        }
+
+        let root_idx = *self
+            .root_intern
+            .entry(CODEX_ROOT.to_string())
+            .or_insert_with(|| {
+                let i = self.roots.len() as u16;
+                self.roots.push(CODEX_ROOT.to_string());
+                i
+            });
+
+        // Seed an owned model interner from the existing table so freshly
+        // pushed models get correct, stable indices into `self.models`.
+        let mut model_intern: HashMap<String, u16> = self
+            .models
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.clone(), i as u16))
+            .collect();
+
+        // Aggregate per (cwd_idx, model_idx, date, minute) →
+        // (input, output, cache_read, cost) to match Claude's minute keying.
+        type CodexKey = (u16, u16, NaiveDate, u16);
+        type CodexAcc = (u64, u64, u64, f64);
+        let mut agg: HashMap<CodexKey, CodexAcc> = HashMap::new();
+        for d in deltas {
+            let cwd_idx = match self.cwd_intern.get(&d.cwd) {
+                Some(&i) => i,
+                None => {
+                    let i = self.cwds.len() as u16;
+                    self.cwds.push(d.cwd.clone());
+                    self.cwd_intern.insert(d.cwd.clone(), i);
+                    i
+                }
+            };
+            let model_idx = match model_intern.get(d.model.as_str()) {
+                Some(&i) => i,
+                None => {
+                    let i = self.models.len() as u16;
+                    self.models.push(d.model.clone());
+                    model_intern.insert(d.model.clone(), i);
+                    i
+                }
+            };
+            let cost = cost_from_tokens(&d.model, d.input + d.cache_read, d.output, d.cache_read, 0);
+            let slot = agg.entry((cwd_idx, model_idx, d.date, d.minute)).or_default();
+            slot.0 += d.input;
+            slot.1 += d.output;
+            slot.2 += d.cache_read;
+            slot.3 += cost;
+        }
+
+        for ((cwd_idx, model_idx, date, minute), (input, output, cache_read, cost)) in agg {
+            self.entries.push(CompactEntry {
+                root_idx,
+                cwd_idx,
+                model_idx,
+                date,
+                minute,
+                input_tokens: input,
+                output_tokens: output,
+                cache_read,
+                cache_creation: 0,
+                cost,
+                lines_accepted: 0,
+                lines_suggested: 0,
+                lines_added: 0,
+                lines_deleted: 0,
+            });
         }
     }
 
@@ -255,27 +299,33 @@ impl EventIndex {
         }
         let cwd_filter = project_cwds.map(|cwds| self.cwd_set(cwds));
 
-        // Map cwd_idx → root_key_idx so multiple cwds sharing a root_key aggregate correctly.
-        let mut rk_intern: HashMap<&str, u16> = HashMap::new();
-        let mut rk_strings: Vec<&str> = Vec::new();
+        // Map cwd_idx → root_key_idx so multiple cwds sharing a root_key
+        // aggregate correctly. Owned Strings so the loop can also intern roots
+        // for cwds that have no ProjectGroup (e.g. Codex) without lifetime
+        // tangles between `cwd_to_root` and `self.roots`.
+        let mut rk_intern: HashMap<String, u16> = HashMap::new();
+        let mut rk_strings: Vec<String> = Vec::new();
         let cwd_to_rk: HashMap<u16, u16> = self
             .cwds
             .iter()
             .enumerate()
             .filter_map(|(i, cwd)| {
                 let rk = cwd_to_root.get(cwd.as_str())?.as_str();
-                let rk_idx = *rk_intern.entry(rk).or_insert_with(|| {
+                let rk_idx = *rk_intern.entry(rk.to_string()).or_insert_with(|| {
                     let idx = rk_strings.len() as u16;
-                    rk_strings.push(rk);
+                    rk_strings.push(rk.to_string());
                     idx
                 });
                 Some((i as u16, rk_idx))
             })
             .collect();
 
-        let mut tok_agg: HashMap<(u16, ModelId), u64> = HashMap::new();
-        let mut daily_agg: HashMap<(u16, ModelId), HashMap<NaiveDate, f64>> = HashMap::new();
-        let mut minute_agg: HashMap<(u16, ModelId), HashMap<(NaiveDate, u16), f64>> =
+        // Keyed by (root_key_idx, breakdown label). The label is the Claude
+        // family (opus/sonnet/haiku/other) but the specific model name for
+        // other providers (gpt-5.5, gpt-5.3-codex), so Codex models stay split.
+        let mut tok_agg: HashMap<(u16, String), u64> = HashMap::new();
+        let mut daily_agg: HashMap<(u16, String), HashMap<NaiveDate, f64>> = HashMap::new();
+        let mut minute_agg: HashMap<(u16, String), HashMap<(NaiveDate, u16), f64>> =
             HashMap::new();
 
         for e in &self.entries {
@@ -294,35 +344,49 @@ impl EventIndex {
             }
             let rk_idx = match cwd_to_rk.get(&e.cwd_idx) {
                 Some(&idx) => idx,
-                None => continue,
+                None => {
+                    // No ProjectGroup for this cwd (Codex has none) — group it
+                    // under its own source root so it isn't dropped.
+                    let root = self.roots[e.root_idx as usize].as_str();
+                    match rk_intern.get(root) {
+                        Some(&idx) => idx,
+                        None => {
+                            let idx = rk_strings.len() as u16;
+                            rk_strings.push(root.to_string());
+                            rk_intern.insert(root.to_string(), idx);
+                            idx
+                        }
+                    }
+                }
             };
 
-            let key = (rk_idx, e.model);
+            let label = model_breakdown_label(&self.models[e.model_idx as usize]);
 
             let total = e.input_tokens + e.output_tokens;
-            if e.model != ModelId::Other || total > 0 {
-                *tok_agg.entry(key).or_default() += total;
+            if label != "other" || total > 0 {
+                *tok_agg.entry((rk_idx, label.clone())).or_default() += total;
             }
 
             if e.cost > 0.0 {
-                *daily_agg.entry(key).or_default().entry(e.date).or_default() += e.cost;
+                *daily_agg
+                    .entry((rk_idx, label.clone()))
+                    .or_default()
+                    .entry(e.date)
+                    .or_default() += e.cost;
             }
 
             if include_minute && e.cost > 0.0 {
                 *minute_agg
-                    .entry(key)
+                    .entry((rk_idx, label))
                     .or_default()
                     .entry((e.date, e.minute))
                     .or_default() += e.cost;
             }
         }
 
-        // Convert (rk_idx, ModelId) → (String, String).
-        let resolve = |k: &(u16, ModelId)| -> (String, String) {
-            (
-                rk_strings[k.0 as usize].to_string(),
-                k.1.as_str().to_string(),
-            )
+        // Convert (rk_idx, label) → (root_key string, label).
+        let resolve = |k: &(u16, String)| -> (String, String) {
+            (rk_strings[k.0 as usize].clone(), k.1.clone())
         };
 
         let tokens = tok_agg.into_iter().map(|(k, v)| (resolve(&k), v)).collect();
@@ -654,5 +718,92 @@ impl EventIndex {
             return false;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::codex::{CODEX_ROOT, CodexDelta};
+
+    fn codex(date: NaiveDate, minute: u16, model: &str, input: u64, cache: u64, output: u64) -> CodexDelta {
+        CodexDelta { cwd: "/p".into(), date, minute, model: model.into(), input, cache_read: cache, output }
+    }
+
+    #[test]
+    fn fold_codex_exposes_specific_models_in_per_model_breakdown() {
+        let date = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let mut index = EventIndex::build(&[], &HashMap::new());
+        index.fold_codex(&[
+            codex(date, 600, "gpt-5.5", 1000, 4000, 200),
+            codex(date, 601, "gpt-5.3-codex", 500, 0, 100),
+        ]);
+
+        let start = date.and_hms_opt(0, 0, 0).unwrap();
+        let end = date.and_hms_opt(23, 59, 0).unwrap();
+        let bd = index.per_model_breakdown_in_window(CODEX_ROOT, start, end);
+
+        let models: Vec<&str> = bd.iter().map(|m| m.model.as_str()).collect();
+        assert!(models.contains(&"gpt-5.5"), "got {models:?}");
+        assert!(models.contains(&"gpt-5.3-codex"), "got {models:?}");
+
+        let g55 = bd.iter().find(|m| m.model == "gpt-5.5").unwrap();
+        assert_eq!(g55.input_tokens, 1000, "fresh input preserved");
+        assert_eq!(g55.output_tokens, 200);
+        assert_eq!(g55.cache_read_tokens, 4000);
+        assert!(g55.total_cost() > 0.0);
+    }
+
+    #[test]
+    fn build_model_stats_splits_codex_by_specific_model_and_keeps_claude_family() {
+        use chrono::{TimeZone, Utc};
+
+        let claude = Event {
+            timestamp: Utc.with_ymd_and_hms(2026, 5, 4, 10, 0, 0).unwrap(),
+            model: "claude-opus-4-6".into(),
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cost_usd: 1.0,
+            lines_suggested: 0,
+            lines_accepted: 0,
+            lines_added: 0,
+            lines_deleted: 0,
+            session_file: "s1.jsonl".into(),
+            request_id: None,
+            raw_cost_usd: None,
+            line_uuid: None,
+        };
+        let mut session_info = HashMap::new();
+        session_info.insert("s1.jsonl".to_string(), ("claude-root".to_string(), "/claude-proj".to_string()));
+
+        let mut index = EventIndex::build(&[claude], &session_info);
+        let date = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        // Codex cwd "/p" is deliberately NOT in cwd_to_root (Codex has no
+        // ProjectGroup) — it must fall back to grouping under its own root.
+        index.fold_codex(&[
+            codex(date, 600, "gpt-5.5", 1000, 4000, 200),
+            codex(date, 601, "gpt-5.3-codex", 500, 0, 100),
+        ]);
+
+        let mut cwd_to_root = HashMap::new();
+        cwd_to_root.insert("/claude-proj".to_string(), "claude-root".to_string());
+
+        let stats = index.build_model_stats(&cwd_to_root, None, &|_| true, None, false, None);
+
+        // Claude collapses to family.
+        assert_eq!(stats.tokens.get(&("claude-root".to_string(), "opus".to_string())), Some(&150));
+        // Codex split by specific model, grouped under the codex root.
+        assert_eq!(
+            stats.tokens.get(&(CODEX_ROOT.to_string(), "gpt-5.5".to_string())),
+            Some(&1200),
+            "input 1000 + output 200; keys: {:?}",
+            stats.tokens.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stats.tokens.get(&(CODEX_ROOT.to_string(), "gpt-5.3-codex".to_string())),
+            Some(&600)
+        );
     }
 }

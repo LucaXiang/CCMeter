@@ -952,13 +952,18 @@ fn load_data(
     // REPLACES it rather than being high-water-marked against it. Otherwise
     // stale values (e.g. the pre-fresh-input cache-inclusive counts) would win
     // the max-merge and the corrected, lower counts would never take effect.
-    let (codex_cache, _codex_cwds) = crate::data::codex::load_codex_cache();
+    let codex_deltas = crate::data::codex::collect_codex_deltas();
+    let (codex_cache, _codex_cwds) = crate::data::codex::aggregate(&codex_deltas);
     let mut merged = merged;
     merged.remove_root(crate::data::codex::CODEX_ROOT);
     let merged = cache::merge(merged, &codex_cache);
     cache::save(&merged);
 
-    let index = EventIndex::build(&events, session_map);
+    // Also fold the same Codex deltas into the event index so Codex usage
+    // appears in per-model breakdowns (rate tracking + dashboard), split by
+    // specific model (gpt-5.5 / gpt-5.3-codex).
+    let mut index = EventIndex::build(&events, session_map);
+    index.fold_codex(&codex_deltas);
     (merged, index, outcome.state)
 }
 

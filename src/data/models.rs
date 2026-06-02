@@ -110,6 +110,20 @@ pub(crate) fn normalize_model(model: &str) -> &'static str {
     }
 }
 
+/// Display label for a per-model breakdown. Claude models collapse to their
+/// family (opus/sonnet/haiku/other) — the long-standing dashboard behavior —
+/// but other providers (e.g. OpenAI Codex: `gpt-5.5`, `gpt-5.3-codex`,
+/// `codex-auto-review`) keep their specific model name so distinct models are
+/// told apart. Empty / unrecognized models fall back to the `other` bucket.
+pub(crate) fn model_breakdown_label(model: &str) -> String {
+    let family = normalize_model(model);
+    if family == "other" && !model.is_empty() {
+        model.to_string()
+    } else {
+        family.to_string()
+    }
+}
+
 /// Format a token count as a human-readable string (e.g. "1.2M", "450K", "99").
 pub(crate) fn format_tokens(n: u64) -> String {
     if n >= 1_000_000_000 {
@@ -157,6 +171,20 @@ mod tests {
     #[test]
     fn cost_from_tokens_zero_is_zero() {
         assert_eq!(cost_from_tokens("claude-opus-4-6", 0, 0, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn model_breakdown_label_is_family_for_claude_specific_for_others() {
+        // Claude collapses to family (existing dashboard behavior).
+        assert_eq!(model_breakdown_label("claude-opus-4-6-20260101"), "opus");
+        assert_eq!(model_breakdown_label("claude-sonnet-4-5"), "sonnet");
+        assert_eq!(model_breakdown_label("claude-haiku-4-5"), "haiku");
+        // Non-Claude providers keep their specific model name.
+        assert_eq!(model_breakdown_label("gpt-5.5"), "gpt-5.5");
+        assert_eq!(model_breakdown_label("gpt-5.3-codex"), "gpt-5.3-codex");
+        assert_eq!(model_breakdown_label("codex-auto-review"), "codex-auto-review");
+        // Empty / unknown stays in the catch-all family bucket.
+        assert_eq!(model_breakdown_label(""), "other");
     }
 
     #[test]
