@@ -49,15 +49,27 @@ Claude and Codex, often from many git worktrees, and wants:
 - **Codex thread names** are in `~/.codex/session_index.jsonl`
   (`{id, thread_name, updated_at}`).
 
-### Key architectural insight (why no schema bump)
+### Key architectural insight (why no daily-cache schema bump)
 
 - `build_cards` enumerates each `ProjectGroup`'s **cwd set** and pulls cache
-  entries via `cache.iter_filtered(rootFilter, cwds)`. Claude and Codex share
+  entries via `cache.iter_filtered(rootFilter, cwds)`
+  (`src/ui/cards/data.rs:68`, `src/data/cache.rs:148`). Claude and Codex share
   the same cwd string for the same repo, and Codex stays keyed by `CODEX_ROOT`.
-- **`CODEX_ROOT` already IS the provider dimension.** The source tabs
-  (`All` / `Exclude(codex)` / `Only(codex)`) already filter by provider via the
-  cache root. Unification therefore happens at the **grouping layer**, not in the
-  storage schema. No `CURRENT_SCHEMA_VERSION` bump is required for the cache.
+- **`CODEX_ROOT` is provider *isolation via `RootFilter`*, not the project
+  key.** Precisely: the source tabs (`All` / `Exclude(codex)` / `Only(codex)`)
+  filter by the cache/entry root, which doubles as a provider tag. The project
+  identity is a separate axis (the `ProjectGroup` / cwd→root_key mapping).
+- **Consequence (confirmed by review):** under `RootFilter::All`, Codex usage
+  **already leaks into a Claude card's totals** whenever the card's cwd set
+  contains a cwd Codex also used (e.g. `/Users/xzy/workspace/crab`). That is an
+  accidental, *partial* unification today (main cwd only; no worktrees, no
+  Codex-only repos, no split). This design makes it **controlled**: complete the
+  group's cwd set (incl. Codex worktree cwds), add the provider split, and create
+  cards for Codex-only repos.
+- The **daily cache** (`root→cwd→date→DayEntry`) needs **no
+  `CURRENT_SCHEMA_VERSION` bump** — unification happens at the grouping layer.
+  The **new identity sidecar (① below) is a separate persisted artifact and
+  carries its own schema version + invalidation rules.**
 
 ## Decisions (locked)
 
@@ -70,39 +82,75 @@ Claude and Codex, often from many git worktrees, and wants:
 
 ## Architecture
 
-### ① Identity resolution + persistence — `config/discovery.rs` (+ new persisted store)
+### ① Identity resolution + persistence — `config/discovery.rs` (+ new persisted sidecar)
 
-- New persisted map `cwd → ResolvedIdentity { remote_url, canonical_root }`
-  (JSON sidecar in the existing cache dir). Resolution order:
-  1. **persisted cache** hit → use it;
-  2. **live git** (`resolve_identity` as today) → on success, **write back** to
-     the persisted cache;
-  3. **path-pattern fallback** — strip the first matching worktree segment
-     (`/.claude/worktrees/<x>`, `/<name>-worktrees/<x>`, `/worktrees/<x>`) and use
-     the prefix as the canonical root.
-- **Codex seeds the persisted cache**: each Codex `(cwd, repository_url)` is
-  written in, so a Claude worktree cwd that no longer exists on disk still
-  resolves (Codex saw the same cwd with its URL). Mutual reinforcement.
+- New persisted, **independently schema-versioned** sidecar:
+  `cwd → ResolvedIdentity { remote_url, canonical_root, source, observed_at }`
+  (JSON, alongside the daily cache). `source` ∈ {live-git, codex-seed,
+  path-fallback}.
+- **Resolution order (corrected per review — live-first when the cwd exists):**
+  1. **cwd exists on disk → live git** (`resolve_identity` as today); on
+     success **write through** to the sidecar (refreshing any stale entry).
+     If live git's remote ≠ the persisted remote, the persisted entry is
+     **invalidated** (a repo's remote changed / a path was reused).
+  2. **cwd gone → persisted sidecar** hit (this is the deleted-worktree case).
+  3. **else → path-pattern fallback** (below).
+- **Codex seeds the sidecar:** each Codex `(cwd, repository_url)` is written in
+  (`source = codex-seed`), so a Claude worktree cwd that no longer exists on disk
+  still resolves (Codex saw the same cwd with its URL). Live git still wins over
+  a seed when the cwd exists. Mutual reinforcement, no precedence inversion.
+- **Path-pattern fallback** must extend today's `heuristic_root` (which only
+  strips `/worktrees/` and `/Worktrees/`, `src/config/discovery.rs:427`) to also
+  strip `/.claude/worktrees/<x>` and `/<name>-worktrees/<x>`. Table-driven tests
+  guard against false merges (e.g. `crab-red-coral` must NOT collapse into
+  `crab` by prefix).
 - Normalize remote URLs so `git@host:org/repo.git` and `https://host/org/repo[.git]`
   collapse to one key (strip scheme/credentials, drop trailing `.git`, lowercase
   host + path).
+- **`canonical_root` stays the shortest repo root path** (today's group root for
+  Claude) so existing overrides keyed by `root_path` keep matching — see
+  Overrides compatibility below.
 
-### ② Codex joins grouping — `data/codex/` + `config/discovery.rs`
+### ② Codex joins grouping — pipeline restructure (the [P1] of this design)
 
-- New Codex session-metadata parse: `session_meta` → `(session_id, cwd,
-  repository_url, repo_root)`. (Separate from the token-delta parser.)
-- Feed Codex `(cwd, pre-resolved identity)` into `group_by_identity` alongside
-  Claude sources. Codex sources are flagged `provider = Codex`.
-  - Same remote as a Claude group → merged into that group (its cwd set gains the
-    Codex cwds, including each worktree cwd).
+The current pipeline does **Claude discovery first, then parses Codex inside
+`load_data`** (`src/app.rs:192`, `:1017`); the refresh path splits them further
+(discovery rebuilds groups without Codex at `:1046`; reload parses Codex without
+rebuilding groups). **Identity seeding and Codex-in-groups cannot work in that
+order.** Phase 1 therefore **unifies the pipeline**:
+
+1. Collect Claude `ProjectSource`s **and** parse Codex session metadata
+   (`session_meta` → `(session_id, cwd, repository_url, repo_root)`) up front.
+2. Seed the identity sidecar from Codex `repository_url`s, then resolve every
+   cwd (live-first per ①).
+3. Build **one** unified group set + `cwd→root_key` map from both providers, then
+   build the cache + index from that.
+4. **Both** the initial load (`App::new`/`load_data`) and the refresh/reload
+   paths run this single pipeline — no Claude-only vs Codex-only split.
+
+- **Codex must produce real `ProjectSource`/`ProjectGroup` entries** (not merely
+  be "fed into" grouping): `build_cards` iterates `groups` (`src/ui/cards/data.rs:56`),
+  which today are Claude-only (`src/app.rs:913` documents "Codex has no
+  ProjectGroup"). Codex sources carry `provider = Codex` and their cwd (incl.
+  Codex-only repos and Codex worktree cwds Claude never used).
+  - Same canonical remote as a Claude group → merged in (its cwd set gains the
+    Codex cwds).
   - Codex-only repo, or no git info → its own group/card.
-- **Cache/index keep Codex under `CODEX_ROOT`** (provider tag preserved). Only
-  the *group's cwd set* changes, which is what `build_cards`' `iter_filtered`
-  keys on.
+- **Cache/index keep Codex under `CODEX_ROOT`** (provider tag for the source
+  tabs preserved). Only the *group's cwd set* changes, which is what
+  `build_cards`' `iter_filtered` keys on.
 - Remove the `entry_root == CODEX_ROOT ⇒ separate rk` special-case in
-  `EventIndex::build_model_stats`, so Codex per-model usage resolves to its repo
-  group. Provider isolation for the `Claude Code` / `Codex` tabs remains via
-  `entry_passes` (RootFilter on the entry root).
+  `EventIndex::build_model_stats` (`src/data/index.rs:345`) so Codex per-model
+  usage resolves to its repo group. Isolation for the `Claude Code` (`Exclude`)
+  / `Codex` (`Only`) tabs still holds because `entry_passes`
+  (`src/data/index.rs:707`) filters by the entry's actual root **before**
+  root-key mapping.
+- **Retire / redesign the dedicated Codex per-model panel.** `build_codex_breakdown`
+  reads only `CODEX_ROOT`-keyed stats (`src/app.rs:918`); once Codex resolves to
+  repo-root keys it would render **empty**. Codex per-model usage instead surfaces
+  through the **per-card model breakdown** (`model_daily_costs`/`model_shares`,
+  which already support non-Claude model labels). The `CodexBreakdown` struct and
+  its renderer are removed or repurposed in Phase 1.
 
 ### ③ Card-face provider split — `ui/cards/data.rs` + `ui/cards/render.rs`
 
@@ -122,14 +170,33 @@ Claude and Codex, often from many git worktrees, and wants:
   recent sessions: `title · tokens · cost · date · provider(CC/CX)`, sorted by
   last activity descending, top-N to fit.
 
+### Overrides compatibility (per review [P2])
+
+Overrides (star / rename / hide) are keyed by `root_key == root_path`
+(`src/ui/cards/data.rs:57`). Because `canonical_root` stays the shortest repo
+root path (① above), **existing Claude overrides keep matching** — the crab
+group's root_key is unchanged. New Codex-only groups, and any group whose
+canonical root genuinely shifts, may need re-starring; note this in the changelog.
+No automatic override migration in Phase 1 unless a root_key is observed to
+change for an existing group (then add a one-time remap).
+
 ## Phasing (each phase: TDD red→green, atomic conventionally-typed commits)
 
-1. **Unified grouping** — ① + ②. Codex gets cards, worktrees collapse,
-   persisted+fallback identity, source tabs still filter by provider. Verifiable:
-   `crab` card appears in the Codex view and combines both providers in `All`.
+1. **Unified grouping + pipeline restructure** — ① + ②. Single load/refresh
+   pipeline (collect Claude + Codex metadata → seed/resolve identities → build
+   unified groups → build cache/index). Codex produces real `ProjectGroup`s
+   (incl. Codex-only + worktree cwds); `build_model_stats` special-case removed;
+   the dedicated `CodexBreakdown` panel retired in favour of the per-card model
+   breakdown. Identity sidecar with its own schema version. Verifiable: `crab`
+   card appears with combined usage in `All`, isolates under the `Claude Code` /
+   `Codex` tabs, and a Codex-only repo gets its own card; deleted-worktree cwds
+   still collapse via the sidecar.
 2. **Card-face provider split** — ③.
 3. **Recent sessions list** — ④ (the original #1/#4, generalized to both
    providers).
+
+Phase 1 is the large, load-bearing phase (data pipeline + grouping). Phases 2–3
+are additive UI on top of the unified model.
 
 ## Defaults (adjustable)
 
@@ -154,3 +221,26 @@ Claude and Codex, often from many git worktrees, and wants:
 - Build/test gate per CLAUDE.md: `cargo +1.95.0 build --bin ccmeter`,
   `cargo +1.95.0 test`, `cargo +1.95.0 clippy --bin ccmeter` (no new warnings;
   the 2 known date-relative `rate_limits` failures are pre-existing).
+
+## Independent review (Codex, 2026-06-02)
+
+An independent Codex review read the actual code and returned "not safe as
+written" with 4 [P1] and 3 [P2] findings. None contradicted the approved
+direction (unified cards / live-first persistence / reuse the grouping algorithm
+/ card-face split); all were implementation-precision gaps, now folded in above:
+
+- **[P1] provider-dimension wording** → reworded: `CODEX_ROOT` is RootFilter
+  isolation, not the project key; the Codex→Claude-card leak already happens for
+  shared cwd and this design makes it controlled.
+- **[P1] removing the special-case empties the Codex panel** → Phase 1 retires
+  `CodexBreakdown`; per-card model breakdown carries Codex models.
+- **[P1] Codex-only repos get no card** → Codex must produce real
+  `ProjectSource`/`ProjectGroup` entries.
+- **[P1] pipeline ordering** → Phase 1 unifies the load/refresh pipeline so Codex
+  metadata is collected before grouping/seeding.
+- **[P2] resolution order** → flipped to live-git-first when cwd exists, sidecar
+  only for gone cwds, with remote-change invalidation.
+- **[P2] weak path fallback** → extend `heuristic_root` patterns + false-merge
+  tests.
+- **[P2] overrides drift** → keep `canonical_root` = shortest repo root so
+  existing overrides match; remap only if a root_key actually changes.
