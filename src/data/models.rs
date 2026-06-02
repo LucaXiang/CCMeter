@@ -76,11 +76,6 @@ pub(crate) fn model_pricing(model: &str) -> (f64, f64, f64) {
         .unwrap_or(FALLBACK_PRICING)
 }
 
-/// True for OpenAI Codex CLI models (priced via the OpenAI estimate rows).
-pub(crate) fn is_codex_model(model: &str) -> bool {
-    model.contains("gpt-") || model.contains("codex")
-}
-
 /// Cost (USD) from delta token counts via the local pricing table.
 /// Mirrors Anthropic billing: fresh input at input_price, cache reads at
 /// cache_read_price, cache creation at input_price * 1.25, output at
@@ -163,10 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_models_are_priced_and_detected() {
-        assert!(is_codex_model("gpt-5.5"));
-        assert!(is_codex_model("gpt-5.3-codex"));
-        assert!(!is_codex_model("claude-opus-4-6"));
+    fn codex_models_are_priced() {
         // gpt-5 priced (non-fallback): a pure-output cost is nonzero.
         let c = cost_from_tokens("gpt-5.5", 0, 1_000_000, 0, 0);
         assert!(c > 0.0);

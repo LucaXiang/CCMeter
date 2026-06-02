@@ -134,7 +134,7 @@ pub(crate) fn parse_codex_str(raw: &str, _session_file: &str) -> Vec<CodexDelta>
                     model: model.clone(),
                     input: delta.input_tokens,
                     cache_read: delta.cached_input_tokens,
-                    output: delta.output_tokens + delta.reasoning_output_tokens,
+                    output: delta.output_tokens,
                 });
             }
             _ => {}
@@ -163,7 +163,7 @@ mod tests {
         let total_out: u64 = out.iter().map(|d| d.output).sum();
         assert_eq!(total_in, 30);
         assert_eq!(total_cr, 100);
-        assert_eq!(total_out, 30);
+        assert_eq!(total_out, 20);
         assert!(out.iter().all(|d| d.cwd == "/proj" && d.model == "gpt-5.5"));
     }
 
