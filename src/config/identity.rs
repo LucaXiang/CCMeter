@@ -77,6 +77,41 @@ impl IdentityStore {
             let _ = std::fs::write(&path, &json);
         }
     }
+
+    /// Resolve a cwd's identity. `live` performs the actual git lookup and
+    /// returns `Some` only when the cwd exists and git resolves. Order:
+    /// live-git (write-through, invalidates stale) → persisted → path fallback.
+    pub fn resolve(
+        &mut self,
+        cwd: &str,
+        live: impl FnOnce() -> Option<ResolvedIdentity>,
+    ) -> ResolvedIdentity {
+        if let Some(found) = live() {
+            self.insert(cwd.to_string(), found.clone());
+            return found;
+        }
+        if let Some(found) = self.map.get(cwd) {
+            return found.clone();
+        }
+        let canonical_root = strip_worktree_segment(cwd).unwrap_or_else(|| cwd.to_string());
+        let id = ResolvedIdentity { remote_url: None, canonical_root, source: IdentitySource::PathFallback };
+        self.insert(cwd.to_string(), id.clone());
+        id
+    }
+
+    /// Seed an identity learned from Codex `repository_url` (used before live
+    /// resolution so deleted-worktree cwds still resolve). Never overrides a
+    /// live-git entry already present for this cwd.
+    pub fn seed(&mut self, cwd: String, remote_url: String, canonical_root: String) {
+        if matches!(self.map.get(&cwd).map(|i| i.source), Some(IdentitySource::LiveGit)) {
+            return;
+        }
+        self.insert(cwd, ResolvedIdentity {
+            remote_url: Some(remote_url),
+            canonical_root,
+            source: IdentitySource::CodexSeed,
+        });
+    }
 }
 
 /// Canonicalize a git remote URL so `git@host:org/repo.git` and
@@ -153,6 +188,36 @@ mod tests {
             normalize_remote_url("git@github.com:LucaXiang/Crab.git"),
             normalize_remote_url("git@github.com:LucaXiang/crab-red-coral.git"),
         );
+    }
+
+    fn id(url: Option<&str>, root: &str, src: IdentitySource) -> ResolvedIdentity {
+        ResolvedIdentity { remote_url: url.map(|s| s.to_string()), canonical_root: root.into(), source: src }
+    }
+
+    #[test]
+    fn live_git_wins_when_cwd_exists_and_writes_through() {
+        let mut store = IdentityStore::default();
+        // Pretend a stale Codex seed exists for this cwd.
+        store.insert("/repo".into(), id(Some("github.com/old/x"), "/old", IdentitySource::CodexSeed));
+        let live = Some(id(Some("github.com/new/x"), "/repo", IdentitySource::LiveGit));
+        let got = store.resolve("/repo", || live.clone());
+        assert_eq!(got.canonical_root, "/repo");
+        assert_eq!(got.source, IdentitySource::LiveGit);
+        // Write-through replaced the stale seed.
+        assert_eq!(store.get("/repo").unwrap().remote_url.as_deref(), Some("github.com/new/x"));
+    }
+
+    #[test]
+    fn falls_back_to_persisted_then_path_when_live_none() {
+        let mut store = IdentityStore::default();
+        store.insert("/gone/wt".into(), id(Some("github.com/lucaxiang/crab"), "/Users/xzy/workspace/crab", IdentitySource::CodexSeed));
+        // Persisted hit (deleted-worktree case): live returns None.
+        let got = store.resolve("/gone/wt", || None);
+        assert_eq!(got.canonical_root, "/Users/xzy/workspace/crab");
+        // No persisted entry + no live → path fallback strips the worktree seg.
+        let got2 = store.resolve("/Users/xzy/workspace/crab-worktrees/x", || None);
+        assert_eq!(got2.canonical_root, "/Users/xzy/workspace/crab");
+        assert_eq!(got2.source, IdentitySource::PathFallback);
     }
 
     #[test]
