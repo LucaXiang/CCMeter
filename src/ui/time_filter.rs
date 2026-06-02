@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use chrono::{Local, NaiveDate, Timelike};
 
 use crate::data::tokens;
+use crate::ui::i18n::t;
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TimeFilter {
@@ -17,12 +18,12 @@ pub(crate) enum TimeFilter {
 impl TimeFilter {
     pub(crate) fn label(&self) -> &'static str {
         match self {
-            TimeFilter::Hour1 => "1h",
-            TimeFilter::Hour12 => "12h",
-            TimeFilter::Today => "Today",
-            TimeFilter::LastWeek => "Last week",
-            TimeFilter::LastMonth => "Last month",
-            TimeFilter::All => "All",
+            TimeFilter::Hour1 => t("1h"),
+            TimeFilter::Hour12 => t("12h"),
+            TimeFilter::Today => t("Today"),
+            TimeFilter::LastWeek => t("Last week"),
+            TimeFilter::LastMonth => t("Last month"),
+            TimeFilter::All => t("All"),
         }
     }
 

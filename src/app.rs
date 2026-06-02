@@ -19,6 +19,7 @@ use crate::data::tokens::{DailyTokens, MinuteTokens};
 use crate::ui::cards;
 use crate::ui::heatmap;
 use crate::ui::settings_view::{KeyResult, SettingsState};
+use crate::ui::i18n::t;
 use crate::ui::time_filter::{TimeFilter, date_in_filter, filter_daily};
 use crate::update_check::{self, UpdateInfo};
 
@@ -1104,7 +1105,7 @@ fn build_source_list(
     if has_codex {
         return vec![
             SourceEntry {
-                name: "All".to_string(),
+                name: t("All").to_string(),
                 roots: RootFilter::All,
             },
             SourceEntry {
@@ -1122,7 +1123,7 @@ fn build_source_list(
 
     if root_map.len() <= 1 {
         return vec![SourceEntry {
-            name: "All".to_string(),
+            name: t("All").to_string(),
             roots: RootFilter::All,
         }];
     }
@@ -1131,7 +1132,7 @@ fn build_source_list(
     roots.sort();
 
     let mut sources = vec![SourceEntry {
-        name: "All".to_string(),
+        name: t("All").to_string(),
         roots: RootFilter::All,
     }];
 

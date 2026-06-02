@@ -9,6 +9,7 @@ use ratatui::{
 
 use super::theme::theme;
 use crate::data::tokens::{DailyTokens, MinuteTokens};
+use crate::ui::i18n::t;
 
 /// Height of the heatmap grid alone: 2 borders + 1 month labels + 7 day rows.
 const GRID_HEIGHT: u16 = 10;
@@ -103,18 +104,18 @@ fn token_level(value: u64, thresholds: &[u64; 4]) -> usize {
 
 fn month_abbrev(month: u32) -> &'static str {
     match month {
-        1 => "Jan",
-        2 => "Feb",
-        3 => "Mar",
-        4 => "Apr",
-        5 => "May",
-        6 => "Jun",
-        7 => "Jul",
-        8 => "Aug",
-        9 => "Sep",
-        10 => "Oct",
-        11 => "Nov",
-        12 => "Dec",
+        1 => t("Jan"),
+        2 => t("Feb"),
+        3 => t("Mar"),
+        4 => t("Apr"),
+        5 => t("May"),
+        6 => t("Jun"),
+        7 => t("Jul"),
+        8 => t("Aug"),
+        9 => t("Sep"),
+        10 => t("Oct"),
+        11 => t("Nov"),
+        12 => t("Dec"),
         _ => "???",
     }
 }
@@ -146,10 +147,10 @@ pub fn render(
     let rate = daily.overall_accept_rate();
     let rate_map = daily.accept_rate_map();
 
-    let input_title = format!(" Input {} ", format_tokens(input_total));
-    let output_title = format!(" Output {} ", format_tokens(output_total));
-    let lines_title = format!(" Lines {} ", format_tokens(lines_total));
-    let rate_title = format!(" Accept {:.0}% ", rate);
+    let input_title = format!("{}{} ", crate::ui::i18n::t(" Input "), format_tokens(input_total));
+    let output_title = format!("{}{} ", crate::ui::i18n::t(" Output "), format_tokens(output_total));
+    let lines_title = format!("{}{} ", crate::ui::i18n::t(" Lines "), format_tokens(lines_total));
+    let rate_title = format!("{}{:.0}% ", crate::ui::i18n::t(" Accept "), rate);
 
     #[allow(clippy::type_complexity)]
     let panels: [(&str, &HashMap<NaiveDate, u64>, &[u64; 4], &[Color; 5]); 4] = [
@@ -371,7 +372,15 @@ fn render_one(
         start_sunday,
     );
 
-    static DAY_LABELS: [&str; 7] = ["", "Mon", "", "Wed", "", "Fri", ""];
+    let day_labels: [&str; 7] = [
+        "",
+        crate::ui::i18n::t("Mon"),
+        "",
+        crate::ui::i18n::t("Wed"),
+        "",
+        crate::ui::i18n::t("Fri"),
+        "",
+    ];
     let buf = frame.buffer_mut();
     for day in 0u32..7 {
         let y = inner.y + 1 + day as u16;
@@ -380,7 +389,7 @@ fn render_one(
         }
 
         // Write day label
-        let label = DAY_LABELS[day as usize];
+        let label = day_labels[day as usize];
         for (ci, ch) in label.chars().enumerate() {
             let cx = gx + ci as u16;
             if cx < buf.area().right() {
@@ -638,10 +647,10 @@ pub fn render_intraday(
         0.0
     };
 
-    let input_title = format!(" Input {} ", format_tokens(input_total));
-    let output_title = format!(" Output {} ", format_tokens(output_total));
-    let lines_title = format!(" Lines {} ", format_tokens(lines_total));
-    let rate_title = format!(" Accept {:.0}% ", rate);
+    let input_title = format!("{}{} ", crate::ui::i18n::t(" Input "), format_tokens(input_total));
+    let output_title = format!("{}{} ", crate::ui::i18n::t(" Output "), format_tokens(output_total));
+    let lines_title = format!("{}{} ", crate::ui::i18n::t(" Lines "), format_tokens(lines_total));
+    let rate_title = format!("{}{:.0}% ", crate::ui::i18n::t(" Accept "), rate);
 
     let col_labels = build_col_labels(start, mode);
 
@@ -959,10 +968,10 @@ pub fn render_weekly(
         0.0
     };
 
-    let input_title = format!(" Input {} ", format_tokens(input_total));
-    let output_title = format!(" Output {} ", format_tokens(output_total));
-    let lines_title = format!(" Lines {} ", format_tokens(lines_total));
-    let rate_title = format!(" Accept {:.0}% ", rate);
+    let input_title = format!("{}{} ", crate::ui::i18n::t(" Input "), format_tokens(input_total));
+    let output_title = format!("{}{} ", crate::ui::i18n::t(" Output "), format_tokens(output_total));
+    let lines_title = format!("{}{} ", crate::ui::i18n::t(" Lines "), format_tokens(lines_total));
+    let rate_title = format!("{}{:.0}% ", crate::ui::i18n::t(" Accept "), rate);
 
     let col_labels = build_weekly_col_labels(start_date);
 

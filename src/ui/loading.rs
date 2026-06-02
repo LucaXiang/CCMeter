@@ -38,14 +38,14 @@ pub(crate) fn draw_loading(frame: &mut Frame, elapsed: Duration) {
     lines.push(Line::from(vec![
         Span::styled(star, star_style),
         Span::styled(
-            "  Parsing session files",
+            format!("  {}", crate::ui::i18n::t("Parsing session files")),
             Style::default().fg(Color::Rgb(200, 200, 205)),
         ),
     ]));
 
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![Span::styled(
-        "Press q to quit",
+        crate::ui::i18n::t("Press q to quit"),
         Style::default().fg(t.text_dim).add_modifier(Modifier::DIM),
     )]));
 
@@ -87,7 +87,7 @@ fn draw_compact(frame: &mut Frame, area: Rect, elapsed: Duration) {
         Paragraph::new(Line::from(vec![
             Span::styled(star, star_style),
             Span::styled(
-                "  Parsing session files",
+                format!("  {}", crate::ui::i18n::t("Parsing session files")),
                 Style::default().fg(Color::Rgb(200, 200, 205)),
             ),
         ]))

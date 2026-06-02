@@ -80,7 +80,7 @@ impl App {
             let t = theme();
             frame.render_widget(
                 Paragraph::new(Span::styled(
-                    " Settings",
+                    crate::ui::i18n::t(" Settings "),
                     Style::default()
                         .fg(t.heatmap_title)
                         .add_modifier(Modifier::BOLD),
@@ -126,11 +126,11 @@ impl App {
         let t = theme();
         let busy = self.is_busy();
         let footer_text = if busy {
-            "⟳ Reloading…"
+            crate::ui::i18n::t("⟳ Reloading…")
         } else if self.project_index.is_some() {
-            "Esc Back   Tab Period   ←→ Project   r Refresh   t Rate tracking   q Quit"
+            crate::ui::i18n::t("Esc Back   Tab Period   ←→ Project   r Refresh   t Rate tracking   q Quit")
         } else {
-            "Tab Period   ⇧Tab Source   ←→ Project   ↑↓ Scroll   r Refresh   t Rate tracking   . Settings   q Quit"
+            crate::ui::i18n::t("Tab Period   ⇧Tab Source   ←→ Project   ↑↓ Scroll   r Refresh   t Rate tracking   . Settings   q Quit")
         };
         let footer = Paragraph::new(Span::styled(
             footer_text,
@@ -143,7 +143,7 @@ impl App {
     fn draw_backfill_note(&self, frame: &mut Frame, area: Rect) {
         let t = theme();
         let note = Paragraph::new(Span::styled(
-            "ⓘ Older history is backfilled: token totals only (no per-project / line / model detail).",
+            crate::ui::i18n::t("ⓘ Older history is backfilled: token totals only (no per-project / line / model detail)."),
             Style::default().fg(t.text_dim),
         ))
         .alignment(Alignment::Center);
@@ -169,7 +169,7 @@ impl App {
         }
 
         let proj_display = match self.project_index {
-            None => "All projects".to_string(),
+            None => crate::ui::i18n::t("All projects").to_string(),
             Some(i) => {
                 let group_idx = self.render.display_order[i];
                 let name = &self.config.groups[group_idx].name;
@@ -230,7 +230,7 @@ impl App {
                 )
             })
             .collect();
-        spans.push(Span::styled(" available", Style::default().fg(t.text_dim)));
+        spans.push(Span::styled(crate::ui::i18n::t(" available"), Style::default().fg(t.text_dim)));
 
         let line = Line::from(spans);
         frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
@@ -253,7 +253,7 @@ impl App {
                     "\u{2022}"
                 },
                 t.warning,
-                "Cache rebuilt",
+                crate::ui::i18n::t("Cache rebuilt"),
                 "  —  duplicate sub-agent events are no longer counted; historical totals may shift",
             ),
             CacheLoad::Recovered => (
@@ -263,7 +263,7 @@ impl App {
                     "\u{2022}"
                 },
                 t.error,
-                "Cache was unreadable",
+                crate::ui::i18n::t("Cache was unreadable"),
                 "  —  rebuilt from scratch; if this keeps happening, delete ~/.config/ccmeter/history.json",
             ),
         };
@@ -280,7 +280,7 @@ impl App {
             Span::styled(body_text, Style::default().fg(t.text_primary)),
         ]);
         let hint = Line::from(Span::styled(
-            "press any key to dismiss",
+            crate::ui::i18n::t("press any key to dismiss"),
             Style::default()
                 .fg(t.text_dim)
                 .add_modifier(Modifier::ITALIC),
@@ -446,22 +446,22 @@ impl App {
             "—".to_string()
         };
 
-        let streak_str = format!("{} days", streak);
+        let streak_str = format!("{}{}", streak, crate::ui::i18n::t(" days"));
         let active_str = format!("{}/{}", active, total_days);
         let values: [(&str, &str, Color); 5] = [
-            (&cost_str, " Cost USD ", t.cost),
-            (&streak_str, " Streak ", t.tokens_in),
-            (&active_str, " Active days ", t.tokens_out),
+            (&cost_str, crate::ui::i18n::t(" Cost USD "), t.cost),
+            (&streak_str, crate::ui::i18n::t(" Streak "), t.tokens_in),
+            (&active_str, crate::ui::i18n::t(" Active days "), t.tokens_out),
             (
                 &avg_str,
                 if self.time_filter.is_intraday() {
-                    " Total tokens "
+                    crate::ui::i18n::t(" Total tokens ")
                 } else {
-                    " Avg/day "
+                    crate::ui::i18n::t(" Avg/day ")
                 },
                 t.cache,
             ),
-            (&eff_str, " Efficiency ", t.lines_positive),
+            (&eff_str, crate::ui::i18n::t(" Efficiency "), t.lines_positive),
         ];
 
         let kpi_row_constraints: Vec<Constraint> =
