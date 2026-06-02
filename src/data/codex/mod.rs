@@ -42,10 +42,28 @@ fn discover_session_files() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let root = home.join(".codex").join("sessions");
+    let codex = home.join(".codex");
     let mut files = Vec::new();
-    collect_jsonl(&root, &mut files);
+    // Active sessions first, then archived. Codex moves rotated sessions into
+    // `archived_sessions/`, which holds the bulk of historical usage — missing
+    // it under-counts Codex by more than half.
+    collect_jsonl(&codex.join("sessions"), &mut files);
+    collect_jsonl(&codex.join("archived_sessions"), &mut files);
+    dedup_by_filename(files)
+}
+
+/// Keep the first path for each unique file name (the session UUID). Guards
+/// against a session briefly present in both `sessions/` and
+/// `archived_sessions/` mid-archival; active is scanned first so it wins.
+fn dedup_by_filename(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
     files
+        .into_iter()
+        .filter(|p| match p.file_name() {
+            Some(name) => seen.insert(name.to_os_string()),
+            None => false,
+        })
+        .collect()
 }
 
 fn collect_jsonl(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
@@ -99,5 +117,20 @@ mod tests {
         assert_eq!(e.output, 20);
         assert!(e.cost > 0.0);
         assert!(cwds.contains("/p"));
+    }
+
+    #[test]
+    fn dedup_by_filename_keeps_first_occurrence() {
+        // Same session UUID in both sessions/ and archived_sessions/: active
+        // (scanned first) wins, the archived dup is dropped.
+        let files = vec![
+            PathBuf::from("/c/sessions/x.jsonl"),
+            PathBuf::from("/c/archived_sessions/x.jsonl"),
+            PathBuf::from("/c/archived_sessions/y.jsonl"),
+        ];
+        let out = dedup_by_filename(files);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], PathBuf::from("/c/sessions/x.jsonl"));
+        assert!(out.iter().any(|p| p.ends_with("y.jsonl")));
     }
 }
