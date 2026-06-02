@@ -24,6 +24,8 @@ pub struct ProjectSource {
     /// Which Claude root this came from (e.g. `~/.claude/projects`).
     pub source_root: PathBuf,
     /// Which provider produced this source (Claude or Codex).
+    // read by the card provider-split (Phase 2); set during discovery now
+    #[allow(dead_code)]
     pub provider: Provider,
 }
 
@@ -70,33 +72,11 @@ pub enum OverrideInfo {
     Merged,
 }
 
-/// Result of resolving a project's git identity.
-// TODO: remove once group_by_identity is migrated to the identity-module store (the Claude-only path still uses this legacy struct).
-#[derive(Debug, Clone)]
-struct ResolvedIdentity {
-    root_path: PathBuf,
-    remote_url: Option<String>,
-}
-
 /// Mapping from each source root to the set of cwds that originate from it.
 pub type RootMap = HashMap<PathBuf, HashSet<String>>;
 
 /// Mapping from each session file basename to `(root, cwd)`.
 pub type SessionMap = HashMap<String, (String, String)>;
-
-/// Discover all Claude Code projects and group them by git identity.
-/// Also returns:
-/// - A mapping from each source root to the set of cwds that originate from it.
-/// - A mapping from each session file basename to `(root, cwd)`.
-///
-/// Both are built *before* grouping, so they are not affected by same-cwd
-/// merges across roots.
-pub fn discover_project_groups_with_root_map() -> (Vec<ProjectGroup>, RootMap, SessionMap) {
-    let sources = discover_sources();
-    let (root_map, session_map) = build_root_and_session_maps(&sources);
-    let groups = group_by_identity(sources);
-    (groups, root_map, session_map)
-}
 
 /// Build the `(RootMap, SessionMap)` for a set of sources *before* grouping, so
 /// they are not affected by same-cwd merges across roots. Shared by both the
@@ -333,73 +313,6 @@ fn extract_cwd_from_jsonl(path: &Path) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// Git identity resolution
-// ---------------------------------------------------------------------------
-
-/// Resolve the git identity (root path + remote URL) for a cwd.
-fn resolve_identity(cwd: &str) -> ResolvedIdentity {
-    let cwd_path = Path::new(cwd);
-
-    // Case 1: cwd exists on disk
-    if cwd_path.is_dir() {
-        if let Some(root) = find_git_root(cwd_path) {
-            let remote_url = get_remote_url(&root);
-            return ResolvedIdentity {
-                root_path: root,
-                remote_url,
-            };
-        }
-        // Not a git repo — maybe it contains exactly one git child
-        // (e.g., a monorepo wrapper dir like Francis-Monorepo/ or oppus/)
-        if let Some(identity) = find_unique_git_child(cwd_path) {
-            return identity;
-        }
-        return ResolvedIdentity {
-            root_path: cwd_path.to_path_buf(),
-            remote_url: None,
-        };
-    }
-
-    // Case 2: cwd deleted — walk up parents
-    let mut ancestor = cwd_path.parent();
-    while let Some(dir) = ancestor {
-        if !dir.is_dir() {
-            ancestor = dir.parent();
-            continue;
-        }
-
-        // Try git directly in this parent
-        if let Some(root) = find_git_root(dir) {
-            let remote_url = get_remote_url(&root);
-            return ResolvedIdentity {
-                root_path: root,
-                remote_url,
-            };
-        }
-
-        // Parent exists but isn't a git repo.
-        // Scan its immediate children for a .git — if there's exactly one,
-        // the deleted cwd likely belonged to that repo.
-        if let Some(identity) = find_unique_git_child(dir) {
-            return identity;
-        }
-
-        // Multiple or zero git children — use the original cwd path as-is
-        // (don't climb further to avoid over-grouping into ~/code/ etc.)
-        return ResolvedIdentity {
-            root_path: cwd_path.to_path_buf(),
-            remote_url: None,
-        };
-    }
-
-    // Nothing exists on disk
-    ResolvedIdentity {
-        root_path: heuristic_root(cwd),
-        remote_url: None,
-    }
-}
-
 /// Find the main git repository root for a path.
 /// For linked worktrees, resolves back to the main repo root.
 fn find_git_root(cwd: &Path) -> Option<PathBuf> {
@@ -460,107 +373,7 @@ fn get_remote_url(root: &Path) -> Option<String> {
     None
 }
 
-/// Scan immediate children of `dir` for `.git`.
-/// If exactly one child has a git repo, return its identity.
-fn find_unique_git_child(dir: &Path) -> Option<ResolvedIdentity> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return None;
-    };
-
-    let mut git_children: Vec<PathBuf> = Vec::new();
-
-    for entry in entries.filter_map(Result::ok) {
-        let child = entry.path();
-        if child.is_dir() && child.join(".git").exists() {
-            git_children.push(child);
-        }
-    }
-
-    if git_children.len() == 1 {
-        let child = &git_children[0];
-        let root = find_git_root(child).unwrap_or_else(|| child.clone());
-        let remote_url = get_remote_url(&root);
-        Some(ResolvedIdentity {
-            root_path: root,
-            remote_url,
-        })
-    } else {
-        None
-    }
-}
-
-/// Heuristic root for paths that don't exist on disk at all.
-fn heuristic_root(cwd: &str) -> PathBuf {
-    // Strip worktree segments
-    for pattern in &["/worktrees/", "/Worktrees/"] {
-        if let Some(idx) = cwd.find(pattern) {
-            return PathBuf::from(&cwd[..idx]);
-        }
-    }
-    PathBuf::from(cwd)
-}
-
-// ---------------------------------------------------------------------------
-// Grouping by git identity (remote URL > root path)
-// ---------------------------------------------------------------------------
-
-fn group_by_identity(sources: Vec<ProjectSource>) -> Vec<ProjectGroup> {
-    let mut cwd_cache: HashMap<String, ResolvedIdentity> = HashMap::new();
-
-    // Phase 1: resolve every source
-    let resolved: Vec<(ProjectSource, ResolvedIdentity)> = sources
-        .into_iter()
-        .map(|source| {
-            let identity = if let Some(cwd) = &source.cwd {
-                cwd_cache
-                    .entry(cwd.clone())
-                    .or_insert_with(|| resolve_identity(cwd))
-                    .clone()
-            } else {
-                ResolvedIdentity {
-                    root_path: source.path.clone(),
-                    remote_url: None,
-                }
-            };
-            (source, identity)
-        })
-        .collect();
-
-    // Phase 2: build canonical root per remote URL.
-    // When multiple root_paths share the same remote URL, pick the shortest
-    // (most likely the actual repo root, not a worktree or subdir).
-    let mut url_to_canonical: HashMap<String, PathBuf> = HashMap::new();
-    for (_, id) in &resolved {
-        if let Some(url) = &id.remote_url {
-            let entry = url_to_canonical
-                .entry(url.clone())
-                .or_insert_with(|| id.root_path.clone());
-            if id.root_path.as_os_str().len() < entry.as_os_str().len() {
-                *entry = id.root_path.clone();
-            }
-        }
-    }
-
-    // Phase 3: assign each source to a group key (canonical root)
-    let mut groups_map: HashMap<PathBuf, (Option<String>, Vec<ProjectSource>)> = HashMap::new();
-
-    for (source, id) in resolved {
-        let group_key = if let Some(url) = &id.remote_url {
-            url_to_canonical.get(url).cloned().unwrap_or(id.root_path)
-        } else {
-            id.root_path
-        };
-
-        let entry = groups_map
-            .entry(group_key)
-            .or_insert_with(|| (id.remote_url.clone(), Vec::new()));
-        entry.1.push(source);
-    }
-
-    finalize_groups(groups_map)
-}
-
-/// Shared finalizer for both `group_by_identity` and `group_with_store`.
+/// Shared finalizer for both `group_with_store` calls.
 ///
 /// Takes a map keyed by the chosen canonical root path, each value being
 /// `(remote_url, sources)`. Performs:
@@ -735,24 +548,6 @@ mod tests {
     }
 
     #[test]
-    fn test_heuristic_root_worktrees_segment() {
-        assert_eq!(
-            heuristic_root(
-                "/Users/hmenzagh/oppus/GitHubCode/Francis-Monorepo/Worktrees/Francis/feat/ai"
-            ),
-            PathBuf::from("/Users/hmenzagh/oppus/GitHubCode/Francis-Monorepo")
-        );
-    }
-
-    #[test]
-    fn test_heuristic_root_regular() {
-        assert_eq!(
-            heuristic_root("/Users/hmenzagh/code/CCMeter"),
-            PathBuf::from("/Users/hmenzagh/code/CCMeter")
-        );
-    }
-
-    #[test]
     fn test_derive_group_name() {
         let home = dirs::home_dir().unwrap();
         assert_eq!(
@@ -767,10 +562,11 @@ mod tests {
 
     #[test]
     fn test_discover_runs() {
-        let (groups, _, _) = discover_project_groups_with_root_map();
+        let (groups, _, _) = discover_project_groups_unified();
         for g in &groups {
             assert!(!g.name.is_empty());
-            assert!(g.total_sessions > 0);
+            // Codex-only groups have session_files=[] (Codex cache/index are
+            // produced separately), so total_sessions may legitimately be 0.
         }
     }
 

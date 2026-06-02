@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use chrono::{NaiveDate, Timelike};
 
 use super::cache::RootFilter;
-use super::codex::CODEX_ROOT;
 use super::models::{OUTPUT_COST_WEIGHT, PerModelUsage, model_breakdown_label};
 use super::parser::Event;
 use super::tokens::MinuteTokens;
@@ -709,7 +708,7 @@ impl EventIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::codex::CodexDelta;
+    use crate::data::codex::{CodexDelta, CODEX_ROOT};
 
     fn codex(date: NaiveDate, minute: u16, model: &str, input: u64, cache: u64, output: u64) -> CodexDelta {
         CodexDelta { cwd: "/p".into(), date, minute, model: model.into(), input, cache_read: cache, output }

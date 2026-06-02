@@ -30,6 +30,7 @@ const IDENTITY_SCHEMA_VERSION: u32 = 1;
 struct VersionedStore { schema_version: u32, data: HashMap<String, ResolvedIdentity> }
 
 impl IdentityStore {
+    #[cfg(test)]
     pub fn get(&self, cwd: &str) -> Option<&ResolvedIdentity> { self.map.get(cwd) }
 
     /// Internal priming helper; `resolve` and `seed` are the public entry points.
@@ -42,6 +43,7 @@ impl IdentityStore {
 
     /// Serialize to pretty JSON. Returns `"{}"` on error (safe for display/tests).
     /// `save` uses `to_json_checked` to avoid writing a lossy fallback to disk.
+    #[cfg(test)]
     pub fn to_json(&self) -> String {
         self.to_json_checked().unwrap_or_else(|| "{}".into())
     }
