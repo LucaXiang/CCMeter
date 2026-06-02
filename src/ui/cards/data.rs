@@ -17,6 +17,9 @@ pub struct ProjectCard {
     pub last_activity: NaiveDate,
     pub first_activity: NaiveDate,
     pub total_cost: f64,
+    /// Per-provider cost split (Claude install roots vs CODEX_ROOT). Sums to total_cost.
+    pub cost_claude: f64,
+    pub cost_codex: f64,
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub tokens_cache: u64,
@@ -74,6 +77,8 @@ pub fn build_cards(
         }
 
         let mut total_cost = 0.0f64;
+        let mut cost_claude = 0.0f64;
+        let mut cost_codex = 0.0f64;
         let mut tokens_in = 0u64;
         let mut tokens_out = 0u64;
         let mut tokens_cache = 0u64;
@@ -88,7 +93,7 @@ pub fn build_cards(
         let mut tokens_out_by_day: HashMap<NaiveDate, u64> = HashMap::new();
         let mut cached_active_minutes: u64 = 0;
 
-        for (_root, _cwd, date_str, entry) in cache.iter_filtered(roots, Some(&cwds)) {
+        for (root, _cwd, date_str, entry) in cache.iter_filtered(roots, Some(&cwds)) {
             let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
                 continue;
             };
@@ -108,6 +113,11 @@ pub fn build_cards(
                 &mut last_activity,
                 &mut cost_by_day,
             );
+            if root == crate::data::codex::CODEX_ROOT {
+                cost_codex += entry.cost;
+            } else {
+                cost_claude += entry.cost;
+            }
             lines_suggested += entry.lines_suggested;
             lines_accepted += entry.lines_accepted;
             *tokens_in_by_day.entry(date).or_default() += entry.input;
@@ -182,6 +192,8 @@ pub fn build_cards(
             last_activity,
             first_activity,
             total_cost,
+            cost_claude,
+            cost_codex,
             tokens_in,
             tokens_out,
             tokens_cache,
@@ -238,6 +250,60 @@ fn accumulate_entry(
         Some(prev) if date > *prev => *last_activity = Some(date),
         None => *last_activity = Some(date),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::discovery::{ProjectGroup, ProjectSource, Provider};
+    use crate::data::cache::{Cache, DayEntry};
+    use crate::data::codex::CODEX_ROOT;
+    use std::path::PathBuf;
+
+    fn group(name: &str, cwd: &str) -> ProjectGroup {
+        ProjectGroup {
+            name: name.into(),
+            root_path: PathBuf::from(format!("/repo/{name}")),
+            remote_url: None,
+            sources: vec![ProjectSource {
+                dir_name: name.into(),
+                path: PathBuf::from(cwd),
+                session_files: vec![],
+                cwd: Some(cwd.into()),
+                source_root: PathBuf::from("/r"),
+                provider: Provider::Claude,
+            }],
+            total_sessions: 0,
+            override_info: None,
+        }
+    }
+
+    fn entry(cost: f64) -> DayEntry {
+        DayEntry { cost, input: 10, output: 5, ..Default::default() }
+    }
+
+    #[test]
+    fn card_cost_splits_by_provider() {
+        // Same cwd "/p/crab" has a Claude-root entry and a CODEX_ROOT entry.
+        let mut cache = Cache::new();
+        cache.entry_root("/Users/x/.claude/projects".into())
+            .entry("/p/crab".into()).or_default()
+            .insert("2026-05-04".into(), entry(30.0));
+        cache.entry_root(CODEX_ROOT.into())
+            .entry("/p/crab".into()).or_default()
+            .insert("2026-05-04".into(), entry(12.0));
+
+        let groups = vec![group("crab", "/p/crab")];
+        let overrides = Overrides::default();
+        let cards = build_cards(
+            &groups, &cache, &overrides, &RootFilter::All,
+            |_| true, &HashMap::new(), None, &HashMap::new(),
+        );
+        let crab = cards.iter().find(|c| c.name == "crab").expect("crab card");
+        assert!((crab.total_cost - 42.0).abs() < 1e-9, "total = both providers");
+        assert!((crab.cost_claude - 30.0).abs() < 1e-9, "claude split");
+        assert!((crab.cost_codex - 12.0).abs() < 1e-9, "codex split");
     }
 }
 
