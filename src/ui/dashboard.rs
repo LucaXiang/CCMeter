@@ -418,40 +418,8 @@ impl App {
                 &self.data.minute_tokens,
                 &self.render.minute_model,
             );
-        } else if self.render.cards.is_empty() {
-            // No cards (Codex source view — Codex has no ProjectGroup). Show the
-            // per-model breakdown (gpt-5.5 / gpt-5.3-codex) full-height, if any.
-            if let Some(breakdown) = &self.render.codex_breakdown {
-                cards::render_codex_breakdown(frame, chunks[2], breakdown, range_start, range_end);
-            }
-        } else if let Some(breakdown) = &self.render.codex_breakdown {
-            // Combined "All" view: Claude project cards on top, a compact Codex
-            // per-model strip at the bottom (Codex has no card of its own).
-            let strip_h = (breakdown.rows.len() as u16 + 2).min(chunks[2].height / 3);
-            let split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(strip_h)])
-                .split(chunks[2]);
-            cards::render(
-                frame,
-                split[0],
-                &self.render.cards,
-                anim_tick,
-                range_start,
-                range_end,
-                self.card_scroll,
-            );
-            cards::render_codex_breakdown(frame, split[1], breakdown, range_start, range_end);
         } else {
-            cards::render(
-                frame,
-                chunks[2],
-                &self.render.cards,
-                anim_tick,
-                range_start,
-                range_end,
-                self.card_scroll,
-            );
+            cards::render(frame, chunks[2], &self.render.cards, anim_tick, range_start, range_end, self.card_scroll);
         }
     }
 
