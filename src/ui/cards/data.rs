@@ -146,19 +146,32 @@ pub fn build_cards(
 
         let model_shares = compute_model_shares(&root_key, model_tokens);
 
-        let model_order = ["opus", "sonnet", "haiku", "other"];
+        // Models actually present for this root — Claude families and/or
+        // specific non-Claude models (e.g. gpt-5.5) — ordered by total cost
+        // descending so the stacked chart and legend agree.
+        let mut model_labels: Vec<String> = model_daily_costs_map
+            .keys()
+            .filter(|(rk, _)| rk == &root_key)
+            .map(|(_, m)| m.clone())
+            .collect();
+        model_labels.sort();
+        model_labels.dedup();
         let mut model_daily_costs: Vec<(String, Vec<(NaiveDate, f64)>)> = Vec::new();
-        for &model in &model_order {
-            let key = (root_key.clone(), model.to_string());
-            if let Some(day_map) = model_daily_costs_map.get(&key) {
+        for model in model_labels {
+            if let Some(day_map) = model_daily_costs_map.get(&(root_key.clone(), model.clone())) {
                 let mut series: Vec<(NaiveDate, f64)> =
                     day_map.iter().map(|(&d, &c)| (d, c)).collect();
                 series.sort_by_key(|&(d, _)| d);
                 if !series.is_empty() {
-                    model_daily_costs.push((model.to_string(), series));
+                    model_daily_costs.push((model, series));
                 }
             }
         }
+        model_daily_costs.sort_by(|a, b| {
+            let sa: f64 = a.1.iter().map(|(_, c)| c).sum();
+            let sb: f64 = b.1.iter().map(|(_, c)| c).sum();
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let time_minutes = cached_active_minutes;
 

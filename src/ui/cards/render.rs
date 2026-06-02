@@ -1114,24 +1114,24 @@ fn render_detail_charts(
 
     // Left chart: Cost stacked by model
     let cost_period_label = format!(" Cost{}", granularity.period_suffix());
-    let left_legend = Line::from(vec![
-        Span::styled(
-            cost_period_label,
-            Style::default()
-                .fg(t.text_secondary)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("■", Style::default().fg(t.model_color("opus"))),
-        Span::styled(" opus ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("sonnet"))),
-        Span::styled(" sonnet ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("haiku"))),
-        Span::styled(" haiku", Style::default().fg(t.text_dim)),
-    ]);
-    frame.render_widget(Paragraph::new(left_legend), left_split[0]);
+    // Dynamic legend: the models actually present in this project (Claude
+    // families and/or specific models like gpt-5.5), matching the chart.
+    let mut left_spans = vec![Span::styled(
+        cost_period_label,
+        Style::default()
+            .fg(t.text_secondary)
+            .add_modifier(Modifier::BOLD),
+    )];
+    for (model, _) in &card.model_shares {
+        left_spans.push(Span::styled("■", Style::default().fg(t.model_color(model))));
+        left_spans.push(Span::styled(
+            format!(" {model} "),
+            Style::default().fg(t.text_dim),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(left_spans)), left_split[0]);
 
     let chart_w_left = left_split[1].width.saturating_sub(7) as usize;
-    let model_order = ["opus", "sonnet", "haiku", "other"];
 
     let intraday_params = match granularity {
         DetailGranularity::Intraday {
@@ -1152,18 +1152,16 @@ fn render_detail_charts(
 
     let (model_series, left_x_labels) = match granularity {
         DetailGranularity::Daily => {
-            let series: Vec<(String, Vec<f64>)> = model_order
+            // card.model_daily_costs already holds exactly the models present,
+            // ordered by cost — use it directly (no hardcoded family list).
+            let series: Vec<(String, Vec<f64>)> = card
+                .model_daily_costs
                 .iter()
-                .filter_map(|&name| {
-                    card.model_daily_costs
-                        .iter()
-                        .find(|(m, _)| m == name)
-                        .map(|(m, data)| {
-                            (
-                                m.clone(),
-                                bucket_f64_series(data, range_start, range_end, chart_w_left),
-                            )
-                        })
+                .map(|(m, data)| {
+                    (
+                        m.clone(),
+                        bucket_f64_series(data, range_start, range_end, chart_w_left),
+                    )
                 })
                 .collect();
             let labels = x_axis_labels(range_start, range_end, chart_w_left);
@@ -1173,23 +1171,31 @@ fn render_detail_charts(
             let Some((today, start_minute, _, n_buckets)) = intraday_params else {
                 return;
             };
-            let series: Vec<(String, Vec<f64>)> = model_order
+            let mut labels: Vec<String> = minute_model_costs
+                .keys()
+                .filter(|(rk, _)| rk == &card.root_key)
+                .map(|(_, m)| m.clone())
+                .collect();
+            labels.sort();
+            labels.dedup();
+            let series: Vec<(String, Vec<f64>)> = labels
                 .iter()
-                .filter_map(|&name| {
-                    let key = (card.root_key.clone(), name.to_string());
-                    minute_model_costs.get(&key).map(|data| {
-                        (
-                            name.to_string(),
-                            bucket_minute(
-                                data.iter().map(|(&k, &v)| (k, v)),
-                                today,
-                                start_minute,
-                                bucket_min,
-                                n_buckets,
-                                chart_w_left,
-                            ),
-                        )
-                    })
+                .filter_map(|name| {
+                    minute_model_costs
+                        .get(&(card.root_key.clone(), name.clone()))
+                        .map(|data| {
+                            (
+                                name.clone(),
+                                bucket_minute(
+                                    data.iter().map(|(&k, &v)| (k, v)),
+                                    today,
+                                    start_minute,
+                                    bucket_min,
+                                    n_buckets,
+                                    chart_w_left,
+                                ),
+                            )
+                        })
                 })
                 .filter(|(_, v)| v.iter().any(|x| *x > 0.0))
                 .collect();
