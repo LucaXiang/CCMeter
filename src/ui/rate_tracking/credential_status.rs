@@ -40,7 +40,9 @@ pub(super) fn credential_status_detail(cred: &OAuthCredential) -> Option<String>
 }
 
 pub(super) fn credential_status_color(cred: &OAuthCredential, t: &Theme) -> Color {
-    if cred.access_token.is_none() || cred.is_expired() {
+    if cred.is_codex() {
+        t.text_dim
+    } else if cred.access_token.is_none() || cred.is_expired() {
         t.warning
     } else if cred.stats.last_error.is_some() {
         t.error
@@ -50,7 +52,9 @@ pub(super) fn credential_status_color(cred: &OAuthCredential, t: &Theme) -> Colo
 }
 
 pub(super) fn credential_poll_label(cred: &OAuthCredential) -> String {
-    if cred.access_token.is_none() {
+    if cred.is_codex() {
+        "live from session".to_string()
+    } else if cred.access_token.is_none() {
         "no token".to_string()
     } else if cred.is_expired() {
         "token expired".to_string()

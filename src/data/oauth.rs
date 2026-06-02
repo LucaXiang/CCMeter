@@ -87,6 +87,12 @@ pub struct OAuthCredential {
 }
 
 impl OAuthCredential {
+    /// True for the synthetic Codex credential (usage read from session files,
+    /// not polled over HTTP — it has no OAuth token).
+    pub fn is_codex(&self) -> bool {
+        self.source_root.as_os_str() == crate::data::codex::CODEX_ROOT
+    }
+
     pub fn is_expired(&self) -> bool {
         match self.expires_at {
             Some(exp) => {
@@ -382,7 +388,49 @@ pub fn discover_credentials_with_usage(source_roots: &[PathBuf]) -> Vec<OAuthCre
             cred.usage = result.usage;
         }
     });
+    if let Some(codex) = codex_credential() {
+        creds.push(codex);
+    }
     creds
+}
+
+/// Build a synthetic credential for OpenAI Codex from its latest session
+/// rate-limit snapshot, so Codex's 5h / 7d windows show in the rate-tracking
+/// view alongside Claude. It has no OAuth token (never polled over HTTP); the
+/// usage is read straight from `~/.codex` session files.
+fn codex_credential() -> Option<OAuthCredential> {
+    let rl = crate::data::codex::rate::latest_codex_rate_limits()?;
+    let to_rfc = |ts: Option<i64>| -> Option<String> {
+        ts.and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .map(|d| d.to_rfc3339())
+    };
+    Some(OAuthCredential {
+        source_root: PathBuf::from(crate::data::codex::CODEX_ROOT),
+        subscription_type: rl.plan_type.clone(),
+        rate_limit_tier: None,
+        expires_at: None,
+        access_token: None,
+        usage: Some(UsageReport {
+            five_hour: Some(UsageWindow {
+                utilization: rl.five_hour_percent,
+                resets_at: to_rfc(rl.five_hour_resets_at),
+            }),
+            seven_day: Some(UsageWindow {
+                utilization: rl.seven_day_percent,
+                resets_at: to_rfc(rl.seven_day_resets_at),
+            }),
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            seven_day_cowork: None,
+            extra_usage: None,
+        }),
+        stats: UsageStats {
+            attempt_count: 1,
+            call_count: 1,
+            last_fetch: Some(Instant::now()),
+            ..Default::default()
+        },
+    })
 }
 
 /// Discover OAuth credentials for all known source roots.

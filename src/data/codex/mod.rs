@@ -2,6 +2,7 @@
 //! daily cache under the `codex` root so it aggregates with Claude in "All".
 
 pub mod parser;
+pub mod rate;
 
 use chrono::NaiveDate;
 
@@ -69,7 +70,7 @@ fn dedup_by_filename(files: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-fn collect_jsonl(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
+pub(crate) fn collect_jsonl(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
