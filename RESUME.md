@@ -1,9 +1,14 @@
 # CCMeter 接力文档 — 统一项目卡(Claude + Codex)
 
-**当前 HEAD**: `ac2ac37` (已 merge 进 `main` 并 push 到 `fork` = git@github.com:LucaXiang/CCMeter.git)
+**当前 HEAD**: `1cf2c7d` (已 merge 进 `main` 并 push 到 `fork` = git@github.com:LucaXiang/CCMeter.git)
 **SPEC**: `docs/superpowers/specs/2026-06-02-unified-project-cards-design.md`
-**计划**: `docs/superpowers/plans/2026-06-02-unified-project-cards-phase{1,2,3}.md`
-**状态**: 统一项目卡功能(Phase 1–3)**全部完成**。仅剩 #4 生产力面板(独立特性)。
+**计划**: `docs/superpowers/plans/`(unified-project-cards-phase{1,2,3} + ui-layout-polish-phase4 + i18n-phase5)
+**状态**: 统一项目卡(P1–3)+ UI 布局打磨(P4)+ i18n 中英双语(P5)+ Codex 凭证 bug **全部完成**。仅剩 #4 生产力面板(独立特性)。
+**测试基线**: `cargo +1.95.0 test` → 107 passed; 2 failed(既有 date-relative rate_limits);clippy 11。
+**最近增量(P4/P5/bug)**:
+- 🔴 Codex 合成凭证每 5min discovery 刷新被丢 → 幂等 `with_codex_credential`,启动+刷新两路径都附上(`oauth.rs`/`app.rs spawn_discovery`)。
+- 🟣 P4 布局:卡片高 8 每组一行;明细 Cost/Tokens 图表纵向堆叠全宽;Recent sessions ↑↓ 滚动(`App.detail_session_scroll`,仅 `project_index.is_some()` 时)。
+- 🟣 P5 i18n:`src/ui/i18n.rs`(`Lang`/`detect`/全局 `AtomicU8`/`t(&'static str)`+ ~180 条 ZH 表,未命中回退英文);全 UI 文案包 `t(...)`——**注意 `let t = theme()` 遮蔽 → 用全限定 `crate::ui::i18n::t`**;`Settings.language` + 启动 `$LANG`/`$CCMETER_LANG` 检测 + Display 标签 Language 开关(实时切+持久化)。加新文案就往 `zh()` 加一条 `"en" => "中文"`(键=代码里**逐字**含空格的字面量)。
 
 ## 已完成 — Phase 1：统一分组 + 管线
 
