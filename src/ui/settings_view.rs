@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use super::heatmap::fill_cell;
+use super::i18n::{current as i18n_current, set_lang, Lang};
 use super::theme::theme;
 use crate::config::discovery::{self, OverrideInfo, ProjectGroup};
 use crate::config::overrides::Overrides;
@@ -147,6 +148,8 @@ pub struct SettingsState {
     search: Option<SearchState>,
     confirm_reset: bool,
     pub tick: usize,
+    /// Which row is focused in the Display tab (0 = Heatmap mode, 1 = Language).
+    display_row: usize,
 }
 
 impl SettingsState {
@@ -161,6 +164,7 @@ impl SettingsState {
             search: None,
             confirm_reset: false,
             tick: 0,
+            display_row: 0,
         };
         s.rebuild_rows(groups);
         s
@@ -442,12 +446,37 @@ impl SettingsState {
     }
 
     fn handle_display_key(&mut self, key: KeyEvent, settings: &mut Settings) -> KeyResult {
+        const DISPLAY_ROWS: usize = 2; // 0 = Heatmap mode, 1 = Language
         match key.code {
             KeyCode::Esc | KeyCode::Char('.') => return KeyResult::Close,
+            KeyCode::Up | KeyCode::Char('k') if self.display_row > 0 => {
+                self.display_row -= 1;
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.display_row + 1 < DISPLAY_ROWS => {
+                self.display_row += 1;
+            }
             KeyCode::Left | KeyCode::Right => {
-                settings.expanded_heatmap = !settings.expanded_heatmap;
-                settings.save();
-                return KeyResult::Rebuild;
+                if self.display_row == 0 {
+                    settings.expanded_heatmap = !settings.expanded_heatmap;
+                    settings.save();
+                    return KeyResult::Rebuild;
+                } else {
+                    // Toggle language
+                    let new_lang = match i18n_current() {
+                        Lang::En => Lang::Zh,
+                        Lang::Zh => Lang::En,
+                    };
+                    set_lang(new_lang);
+                    settings.language = Some(
+                        match new_lang {
+                            Lang::En => "en",
+                            Lang::Zh => "zh",
+                        }
+                        .to_string(),
+                    );
+                    settings.save();
+                    return KeyResult::Rebuild;
+                }
             }
             _ => {}
         }
@@ -865,23 +894,98 @@ impl SettingsState {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
+                Constraint::Length(3),
                 Constraint::Length(6),
                 Constraint::Min(0),
             ])
             .split(area);
 
-        // --- Heatmap mode selector (←→ to switch) ---
-        let label = Line::from(vec![
-            Span::styled("  Heatmap mode: ", Style::default().fg(t.text_dim)),
+        // --- Heatmap mode selector (row 0) ---
+        let heatmap_focused = self.display_row == 0;
+        let heatmap_label = Line::from(vec![
+            Span::styled(
+                "  Heatmap mode: ",
+                if heatmap_focused {
+                    Style::default().fg(t.text_dim)
+                } else {
+                    Style::default().fg(t.text_dim).add_modifier(Modifier::DIM)
+                },
+            ),
             Span::styled(
                 if is_expanded { "Expanded" } else { "Compact" },
-                Style::default()
-                    .fg(t.heatmap_title)
-                    .add_modifier(Modifier::BOLD),
+                if heatmap_focused {
+                    Style::default()
+                        .fg(t.heatmap_title)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.text_dim)
+                },
             ),
+            if heatmap_focused {
+                Span::styled(
+                    " ◀",
+                    Style::default()
+                        .fg(t.heatmap_title)
+                        .add_modifier(Modifier::DIM),
+                )
+            } else {
+                Span::raw("")
+            },
         ]);
-        let setting_block = Paragraph::new(vec![Line::raw(""), label]);
+
+        // --- Language selector (row 1) ---
+        let lang_focused = self.display_row == 1;
+        let is_zh = i18n_current() == Lang::Zh;
+        let lang_label = Line::from(vec![
+            Span::styled(
+                "  Language: ",
+                if lang_focused {
+                    Style::default().fg(t.text_dim)
+                } else {
+                    Style::default().fg(t.text_dim).add_modifier(Modifier::DIM)
+                },
+            ),
+            Span::styled(
+                "English",
+                if lang_focused && !is_zh {
+                    Style::default()
+                        .fg(t.heatmap_title)
+                        .add_modifier(Modifier::BOLD)
+                } else if !is_zh {
+                    Style::default().fg(t.text_dim)
+                } else {
+                    Style::default().fg(t.text_dim).add_modifier(Modifier::DIM)
+                },
+            ),
+            Span::styled(
+                " | ",
+                Style::default().fg(t.divider),
+            ),
+            Span::styled(
+                "中文",
+                if lang_focused && is_zh {
+                    Style::default()
+                        .fg(t.heatmap_title)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_zh {
+                    Style::default().fg(t.text_dim)
+                } else {
+                    Style::default().fg(t.text_dim).add_modifier(Modifier::DIM)
+                },
+            ),
+            if lang_focused {
+                Span::styled(
+                    " ◀",
+                    Style::default()
+                        .fg(t.heatmap_title)
+                        .add_modifier(Modifier::DIM),
+                )
+            } else {
+                Span::raw("")
+            },
+        ]);
+
+        let setting_block = Paragraph::new(vec![Line::raw(""), heatmap_label, lang_label]);
         frame.render_widget(setting_block, chunks[0]);
 
         // --- Inline preview ---
@@ -980,8 +1084,10 @@ impl SettingsState {
 
     fn render_display_status_bar(&self, frame: &mut Frame, area: Rect) {
         let hints = vec![
+            Span::styled(" ↑↓ ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("Navigate   "),
             Span::styled(" ←→ ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("Switch mode   "),
+            Span::raw("Toggle   "),
             Span::styled(" Tab ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("Switch tab   "),
             Span::styled(" . ", Style::default().add_modifier(Modifier::BOLD)),
