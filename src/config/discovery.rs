@@ -92,11 +92,19 @@ pub type SessionMap = HashMap<String, (String, String)>;
 /// merges across roots.
 pub fn discover_project_groups_with_root_map() -> (Vec<ProjectGroup>, RootMap, SessionMap) {
     let sources = discover_sources();
+    let (root_map, session_map) = build_root_and_session_maps(&sources);
+    let groups = group_by_identity(sources);
+    (groups, root_map, session_map)
+}
 
+/// Build the `(RootMap, SessionMap)` for a set of sources *before* grouping, so
+/// they are not affected by same-cwd merges across roots. Shared by both the
+/// Claude-only and the unified discovery entry points.
+fn build_root_and_session_maps(sources: &[ProjectSource]) -> (RootMap, SessionMap) {
     let mut root_map: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     let mut session_map: HashMap<String, (String, String)> = HashMap::new();
 
-    for s in &sources {
+    for s in sources {
         let cwd = match &s.cwd {
             Some(c) => c.clone(),
             None => s.path.to_string_lossy().to_string(),
@@ -113,7 +121,53 @@ pub fn discover_project_groups_with_root_map() -> (Vec<ProjectGroup>, RootMap, S
         }
     }
 
-    let groups = group_by_identity(sources);
+    (root_map, session_map)
+}
+
+/// Provider-aware discovery used by both initial load and refresh. Collects
+/// Claude sources + Codex session metadata, seeds + resolves identities through
+/// the persisted identity store, and returns one unified group set (Codex cwds
+/// fold into their repo's group). Persists the identity store.
+///
+/// The returned `RootMap`/`SessionMap` are Claude-derived only: Codex cache and
+/// index entries are produced separately under `CODEX_ROOT`, so Codex sources
+/// carry no `session_files` here and contribute nothing to the session map.
+pub fn discover_project_groups_unified() -> (Vec<ProjectGroup>, RootMap, SessionMap) {
+    use crate::config::identity::IdentityStore;
+    use crate::data::codex::sessions::collect_codex_session_meta;
+
+    let claude_sources = discover_sources();
+    let (root_map, session_map) = build_root_and_session_maps(&claude_sources);
+
+    let mut store = IdentityStore::load();
+
+    // Seed identities from Codex repository_url BEFORE resolving, then build
+    // Codex ProjectSources (one per distinct cwd; session_files left empty —
+    // Codex cache/index entries are produced separately under CODEX_ROOT).
+    let metas = collect_codex_session_meta();
+    let mut codex_sources: Vec<ProjectSource> = Vec::new();
+    let mut seen_cwd: HashSet<String> = HashSet::new();
+    for m in &metas {
+        if let Some(url) = &m.repository_url {
+            let canonical = m.repo_root.clone().unwrap_or_else(|| m.cwd.clone());
+            store.seed(m.cwd.clone(), url.clone(), canonical);
+        }
+        if seen_cwd.insert(m.cwd.clone()) {
+            codex_sources.push(ProjectSource {
+                dir_name: m.cwd.clone(),
+                path: PathBuf::from(&m.cwd),
+                session_files: vec![],
+                cwd: Some(m.cwd.clone()),
+                source_root: PathBuf::from(crate::data::codex::CODEX_ROOT),
+                provider: Provider::Codex,
+            });
+        }
+    }
+
+    let mut all = claude_sources;
+    all.extend(codex_sources);
+    let groups = group_with_store(all, &mut store);
+    store.save();
     (groups, root_map, session_map)
 }
 
@@ -502,6 +556,18 @@ fn group_by_identity(sources: Vec<ProjectSource>) -> Vec<ProjectGroup> {
         entry.1.push(source);
     }
 
+    finalize_groups(groups_map)
+}
+
+/// Shared finalizer for both `group_by_identity` and `group_with_store`.
+///
+/// Takes a map keyed by the chosen canonical root path, each value being
+/// `(remote_url, sources)`. Performs:
+/// - Phase 4: merge sources that share the same cwd (within a group).
+/// - Phase 5: build the `ProjectGroup` vec, sorted by lowercased name.
+fn finalize_groups(
+    mut groups_map: HashMap<PathBuf, (Option<String>, Vec<ProjectSource>)>,
+) -> Vec<ProjectGroup> {
     // Phase 4: merge sources that share the same cwd
     for (_url, sources) in groups_map.values_mut() {
         let mut merged: Vec<ProjectSource> = Vec::new();
@@ -543,6 +609,80 @@ fn group_by_identity(sources: Vec<ProjectSource>) -> Vec<ProjectGroup> {
 
     groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     groups
+}
+
+/// Live-only identity: returns `None` unless the cwd exists on disk and git
+/// resolves. Uses the existing `find_git_root` (worktree → main repo) and
+/// `get_remote_url`, normalizing the remote so it shares a key with seeds.
+fn resolve_identity_live(cwd: &str) -> Option<crate::config::identity::ResolvedIdentity> {
+    use crate::config::identity::{normalize_remote_url, IdentitySource, ResolvedIdentity};
+    let p = Path::new(cwd);
+    if !p.is_dir() {
+        return None;
+    }
+    let root = find_git_root(p)?;
+    let remote = get_remote_url(&root).map(|u| normalize_remote_url(&u));
+    Some(ResolvedIdentity {
+        remote_url: remote,
+        canonical_root: root.to_string_lossy().into_owned(),
+        source: IdentitySource::LiveGit,
+    })
+}
+
+/// Group a mixed Claude+Codex source list using an identity store. Each source's
+/// cwd is resolved live-git-first (write-through), falling back to the store's
+/// seeded/persisted entry, then a path-pattern guess. Sources sharing a
+/// canonical key (normalized remote URL when present, else `canonical_root`)
+/// collapse into one group whose root is the SHORTEST canonical root among them
+/// (so existing overrides keyed by the Claude repo root still match).
+pub(crate) fn group_with_store(
+    sources: Vec<ProjectSource>,
+    store: &mut crate::config::identity::IdentityStore,
+) -> Vec<ProjectGroup> {
+    use crate::config::identity::{normalize_remote_url, ResolvedIdentity};
+
+    // Resolve each source: live git only when the cwd exists on disk.
+    let resolved: Vec<(ProjectSource, ResolvedIdentity)> = sources
+        .into_iter()
+        .map(|s| {
+            let cwd = s
+                .cwd
+                .clone()
+                .unwrap_or_else(|| s.path.to_string_lossy().into_owned());
+            let id = store.resolve(&cwd, || resolve_identity_live(&cwd));
+            (s, id)
+        })
+        .collect();
+
+    // Canonical key: normalized remote URL when present, else canonical_root.
+    let key_of = |id: &ResolvedIdentity| -> String {
+        id.remote_url
+            .clone()
+            .map(|u| normalize_remote_url(&u))
+            .unwrap_or_else(|| id.canonical_root.clone())
+    };
+
+    // Group key → (canonical_root chosen as shortest, remote_url, sources).
+    let mut keyed: HashMap<String, (PathBuf, Option<String>, Vec<ProjectSource>)> = HashMap::new();
+    for (s, id) in resolved {
+        let k = key_of(&id);
+        let root = PathBuf::from(&id.canonical_root);
+        let entry = keyed
+            .entry(k)
+            .or_insert_with(|| (root.clone(), id.remote_url.clone(), Vec::new()));
+        if root.as_os_str().len() < entry.0.as_os_str().len() {
+            entry.0 = root;
+        }
+        entry.2.push(s);
+    }
+
+    // Adapt to the shared finalizer's map shape (keyed by canonical root path).
+    let groups_map: HashMap<PathBuf, (Option<String>, Vec<ProjectSource>)> = keyed
+        .into_values()
+        .map(|(root, remote_url, sources)| (root, (remote_url, sources)))
+        .collect();
+
+    finalize_groups(groups_map)
 }
 
 /// Derive a human-readable name from a root path.
@@ -627,5 +767,59 @@ mod tests {
             assert!(!g.name.is_empty());
             assert!(g.total_sessions > 0);
         }
+    }
+
+    fn src(cwd: &str, provider: Provider) -> ProjectSource {
+        ProjectSource {
+            dir_name: cwd.into(),
+            path: PathBuf::from(cwd),
+            session_files: vec![PathBuf::from(format!("{cwd}/s.jsonl"))],
+            cwd: Some(cwd.into()),
+            source_root: PathBuf::from("/r"),
+            provider,
+        }
+    }
+
+    #[test]
+    fn codex_worktree_and_claude_main_collapse_to_one_group() {
+        use crate::config::identity::{IdentitySource, IdentityStore, ResolvedIdentity};
+        let mut store = IdentityStore::default();
+        let crab = ResolvedIdentity {
+            remote_url: Some("github.com/lucaxiang/crab".into()),
+            canonical_root: "/nonexistent-test/crab".into(),
+            source: IdentitySource::CodexSeed,
+        };
+        // Claude main + a Codex worktree both resolve to the crab remote.
+        // Use clearly-nonexistent paths so live git resolution returns None and
+        // the seeded identities are used (keeps the test hermetic).
+        store.insert("/nonexistent-test/crab".into(), crab.clone());
+        store.insert("/nonexistent-test/crab-worktrees/x".into(), crab);
+        let sources = vec![
+            src("/nonexistent-test/crab", Provider::Claude),
+            src("/nonexistent-test/crab-worktrees/x", Provider::Codex),
+        ];
+        let groups = group_with_store(sources, &mut store);
+        assert_eq!(groups.len(), 1, "both providers in one crab group");
+        let g = &groups[0];
+        let cwds: Vec<&str> = g.sources.iter().filter_map(|s| s.cwd.as_deref()).collect();
+        assert!(cwds.contains(&"/nonexistent-test/crab"));
+        assert!(cwds.contains(&"/nonexistent-test/crab-worktrees/x"));
+    }
+
+    #[test]
+    fn codex_only_repo_gets_its_own_group() {
+        use crate::config::identity::{IdentitySource, IdentityStore, ResolvedIdentity};
+        let mut store = IdentityStore::default();
+        store.insert(
+            "/nonexistent-test/obs".into(),
+            ResolvedIdentity {
+                remote_url: None,
+                canonical_root: "/nonexistent-test/obs".into(),
+                source: IdentitySource::PathFallback,
+            },
+        );
+        let groups = group_with_store(vec![src("/nonexistent-test/obs", Provider::Codex)], &mut store);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].sources[0].provider, Provider::Codex);
     }
 }
