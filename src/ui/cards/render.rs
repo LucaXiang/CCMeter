@@ -384,7 +384,7 @@ fn render_card(
 
     // Line 1: cost (bold, left) + sessions count (dim, right-aligned)
     let cost_str = format_cost(card.total_cost);
-    let sess_str = format!("{} sess", card.sessions);
+    let sess_str = format!("{}{}", card.sessions, crate::ui::i18n::t(" sess"));
     let l1_padding = content_width.saturating_sub(cost_str.len() + sess_str.len());
     let line1 = Line::from(vec![
         Span::styled(
@@ -441,9 +441,9 @@ fn render_card(
     };
 
     // Line 4: tokens breakdown (moved from old line 2)
-    let in_str = format!("in: {}", format_tokens(card.tokens_in));
-    let out_str = format!("out: {}", format_tokens(card.tokens_out));
-    let cache_str = format!("cache: {}", format_tokens(card.tokens_cache));
+    let in_str = format!("{}{}", crate::ui::i18n::t("in: "), format_tokens(card.tokens_in));
+    let out_str = format!("{}{}", crate::ui::i18n::t("out: "), format_tokens(card.tokens_out));
+    let cache_str = format!("{}{}", crate::ui::i18n::t("cache: "), format_tokens(card.tokens_cache));
     let line4 = Line::from(vec![
         Span::styled(&in_str, Style::default().fg(t.tokens_in)),
         Span::raw(" "),
@@ -1019,9 +1019,9 @@ fn render_recent_sessions(frame: &mut Frame, area: Rect, sessions: &[crate::data
     // Build header with optional scroll indicator.
     let header_text = if sessions.len() > rows {
         let end = (scroll + rows).min(sessions.len());
-        format!(" Recent sessions  {}-{}/{} \u{2191}\u{2193}", scroll + 1, end, sessions.len())
+        format!("{}  {}-{}/{} \u{2191}\u{2193}", crate::ui::i18n::t(" Recent sessions"), scroll + 1, end, sessions.len())
     } else {
-        " Recent sessions".to_string()
+        crate::ui::i18n::t(" Recent sessions").to_string()
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -1109,7 +1109,7 @@ fn render_detail_metrics(frame: &mut Frame, area: Rect, card: &ProjectCard) {
         Span::styled("⚡ ", Style::default().fg(t.efficiency_accent)),
         Span::styled(&eff_str, Style::default().fg(t.efficiency_accent)),
         Span::raw("   "),
-        Span::styled("sessions ", dim),
+        Span::styled(crate::ui::i18n::t("sessions "), dim),
         Span::styled(
             &sessions_str,
             Style::default()
@@ -1117,7 +1117,7 @@ fn render_detail_metrics(frame: &mut Frame, area: Rect, card: &ProjectCard) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("   "),
-        Span::styled("active ", dim),
+        Span::styled(crate::ui::i18n::t("active "), dim),
         Span::styled(
             &active_str,
             Style::default()
@@ -1143,19 +1143,19 @@ fn render_detail_metrics(frame: &mut Frame, area: Rect, card: &ProjectCard) {
     let line1 = Line::from(line1_spans);
 
     let line2 = Line::from(vec![
-        Span::styled("in ", dim),
+        Span::styled(crate::ui::i18n::t("in "), dim),
         Span::styled(
             format_tokens(card.tokens_in),
             Style::default().fg(t.tokens_in),
         ),
         Span::raw("   "),
-        Span::styled("out ", dim),
+        Span::styled(crate::ui::i18n::t("out "), dim),
         Span::styled(
             format_tokens(card.tokens_out),
             Style::default().fg(t.tokens_out),
         ),
         Span::raw("   "),
-        Span::styled("cache ", dim),
+        Span::styled(crate::ui::i18n::t("cache "), dim),
         Span::styled(
             format_tokens(card.tokens_cache),
             Style::default().fg(t.cache),
@@ -1183,7 +1183,7 @@ fn render_detail_metrics(frame: &mut Frame, area: Rect, card: &ProjectCard) {
             Style::default().fg(t.lines_negative),
         ),
         Span::raw("   "),
-        Span::styled("net ", dim),
+        Span::styled(crate::ui::i18n::t("net "), dim),
         Span::styled(
             format!("{}{}", if net >= 0 { "+" } else { "" }, net),
             Style::default().fg(if net >= 0 {
@@ -1193,10 +1193,10 @@ fn render_detail_metrics(frame: &mut Frame, area: Rect, card: &ProjectCard) {
             }),
         ),
         Span::raw("   "),
-        Span::styled("total ", dim),
+        Span::styled(crate::ui::i18n::t("total "), dim),
         Span::styled(format!("{}", total_lines), bright),
         Span::raw("   "),
-        Span::styled("accepted ", dim),
+        Span::styled(crate::ui::i18n::t("accepted "), dim),
         Span::styled(
             format!("{}", card.lines_accepted),
             Style::default().fg(t.lines_positive),
@@ -1248,7 +1248,7 @@ fn render_detail_charts(
         .split(halves[1]);
 
     // Top chart: Cost/day stacked by model — full width.
-    let cost_period_label = format!(" Cost{}", granularity.period_suffix());
+    let cost_period_label = format!("{}{}", crate::ui::i18n::t(" Cost"), crate::ui::i18n::t(granularity.period_suffix()));
     // Dynamic legend: the models actually present in this project (Claude
     // families and/or specific models like gpt-5.5), matching the chart.
     let mut left_spans = vec![Span::styled(
@@ -1348,7 +1348,7 @@ fn render_detail_charts(
     );
 
     // Bottom chart: Tokens/day in/out stacked — full width.
-    let tok_period_label = format!(" Tokens{}", granularity.period_suffix());
+    let tok_period_label = format!("{}{}", crate::ui::i18n::t(" Tokens"), crate::ui::i18n::t(granularity.period_suffix()));
     let right_legend = Line::from(vec![
         Span::styled(
             tok_period_label,
@@ -1357,9 +1357,9 @@ fn render_detail_charts(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("■", Style::default().fg(t.tokens_in)),
-        Span::styled(" input ", Style::default().fg(t.text_dim)),
+        Span::styled(crate::ui::i18n::t(" input "), Style::default().fg(t.text_dim)),
         Span::styled("■", Style::default().fg(t.tokens_out)),
-        Span::styled(" output", Style::default().fg(t.text_dim)),
+        Span::styled(crate::ui::i18n::t(" output"), Style::default().fg(t.text_dim)),
     ]);
     frame.render_widget(Paragraph::new(right_legend), tok_rows[0]);
 
