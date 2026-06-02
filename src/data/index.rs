@@ -337,16 +337,7 @@ impl EventIndex {
                 continue;
             }
             let entry_root = self.roots[e.root_idx as usize].as_str();
-            // Codex shares cwd strings with Claude projects (it runs in the same
-            // directories), so its cwd may resolve to a Claude root_key. Never
-            // fold a provider root into a Claude project group — key it strictly
-            // by its own root so it neither leaks into Claude's breakdown nor
-            // gets dropped from its own.
-            let rk_lookup = if entry_root == CODEX_ROOT {
-                None
-            } else {
-                cwd_to_rk.get(&e.cwd_idx).copied()
-            };
+            let rk_lookup = cwd_to_rk.get(&e.cwd_idx).copied();
             let rk_idx = match rk_lookup {
                 Some(idx) => idx,
                 None => match rk_intern.get(entry_root) {
@@ -774,8 +765,8 @@ mod tests {
 
         let mut index = EventIndex::build(&[claude], &session_info);
         let date = NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
-        // Codex cwd "/p" is deliberately NOT in cwd_to_root (Codex has no
-        // ProjectGroup) — it must fall back to grouping under its own root.
+        // Codex cwd "/p" is mapped to repo group "crab" via cwd_to_root,
+        // so Codex per-model usage should attribute to the "crab" root key.
         index.fold_codex(&[
             codex(date, 600, "gpt-5.5", 1000, 4000, 200),
             codex(date, 601, "gpt-5.3-codex", 500, 0, 100),
@@ -783,21 +774,55 @@ mod tests {
 
         let mut cwd_to_root = HashMap::new();
         cwd_to_root.insert("/claude-proj".to_string(), "claude-root".to_string());
+        // Map Codex cwd "/p" to the "crab" repo group.
+        cwd_to_root.insert("/p".to_string(), "crab".to_string());
 
         let stats = index.build_model_stats(&cwd_to_root, &RootFilter::All, &|_| true, None, false, None);
 
         // Claude collapses to family.
         assert_eq!(stats.tokens.get(&("claude-root".to_string(), "opus".to_string())), Some(&150));
-        // Codex split by specific model, grouped under the codex root.
+        // Codex split by specific model, now grouped under the "crab" repo key (not CODEX_ROOT).
         assert_eq!(
-            stats.tokens.get(&(CODEX_ROOT.to_string(), "gpt-5.5".to_string())),
+            stats.tokens.get(&("crab".to_string(), "gpt-5.5".to_string())),
             Some(&1200),
-            "input 1000 + output 200; keys: {:?}",
+            "input 1000 + output 200 under crab; keys: {:?}",
             stats.tokens.keys().collect::<Vec<_>>()
         );
         assert_eq!(
-            stats.tokens.get(&(CODEX_ROOT.to_string(), "gpt-5.3-codex".to_string())),
+            stats.tokens.get(&("crab".to_string(), "gpt-5.3-codex".to_string())),
             Some(&600)
+        );
+        // Codex models must NOT appear under CODEX_ROOT anymore.
+        assert_eq!(
+            stats.tokens.get(&(CODEX_ROOT.to_string(), "gpt-5.5".to_string())),
+            None,
+            "gpt-5.5 must not be under CODEX_ROOT; keys: {:?}",
+            stats.tokens.keys().collect::<Vec<_>>()
+        );
+
+        // Source-tab isolation: Exclude(CODEX_ROOT) filters out Codex entries
+        // entirely (entry_passes checks the entry's own root_idx = CODEX_ROOT).
+        let stats_no_codex = index.build_model_stats(
+            &cwd_to_root,
+            &RootFilter::Exclude(CODEX_ROOT.to_string()),
+            &|_| true, None, false, None,
+        );
+        assert_eq!(
+            stats_no_codex.tokens.get(&("crab".to_string(), "gpt-5.5".to_string())),
+            None,
+            "Codex model must be absent from Claude-tab view"
+        );
+
+        // Only(CODEX_ROOT): only Codex entries pass, so gpt-5.x is present under "crab".
+        let stats_only_codex = index.build_model_stats(
+            &cwd_to_root,
+            &RootFilter::Only(CODEX_ROOT.to_string()),
+            &|_| true, None, false, None,
+        );
+        assert_eq!(
+            stats_only_codex.tokens.get(&("crab".to_string(), "gpt-5.5".to_string())),
+            Some(&1200),
+            "gpt-5.5 must be present in Codex-only tab under crab"
         );
     }
 }
