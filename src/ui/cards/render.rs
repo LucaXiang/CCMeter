@@ -1215,31 +1215,29 @@ fn render_detail_charts(
 ) {
     let t = theme();
 
-    let vert_split = Layout::default()
+    // Outer split: chart halves + model-distribution bar at the bottom.
+    let outer_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(4),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(6), Constraint::Length(1)])
         .split(charts_area);
 
-    let chart_cols = Layout::default()
-        .direction(Direction::Horizontal)
+    // Two full-width chart halves stacked vertically.
+    let halves = Layout::default()
+        .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(vert_split[0]);
+        .split(outer_rows[0]);
 
-    let left_split = Layout::default()
+    // Each half: legend/header row (Length(1)) + chart body with embedded x-axis (Min(3)).
+    let cost_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(3)])
-        .split(chart_cols[0]);
-
-    let right_split = Layout::default()
+        .split(halves[0]);
+    let tok_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(3)])
-        .split(chart_cols[1]);
+        .split(halves[1]);
 
-    // Left chart: Cost stacked by model
+    // Top chart: Cost/day stacked by model — full width.
     let cost_period_label = format!(" Cost{}", granularity.period_suffix());
     // Dynamic legend: the models actually present in this project (Claude
     // families and/or specific models like gpt-5.5), matching the chart.
@@ -1256,9 +1254,9 @@ fn render_detail_charts(
             Style::default().fg(t.text_dim),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(left_spans)), left_split[0]);
+    frame.render_widget(Paragraph::new(Line::from(left_spans)), cost_rows[0]);
 
-    let chart_w_left = left_split[1].width.saturating_sub(7) as usize;
+    let chart_w_left = cost_rows[1].width.saturating_sub(7) as usize;
 
     let intraday_params = match granularity {
         DetailGranularity::Intraday {
@@ -1333,13 +1331,13 @@ fn render_detail_charts(
 
     render_model_stacked_chart(
         frame,
-        left_split[1],
+        cost_rows[1],
         &model_series,
         format_y_cost,
         &left_x_labels,
     );
 
-    // Right chart: Tokens in/out stacked
+    // Bottom chart: Tokens/day in/out stacked — full width.
     let tok_period_label = format!(" Tokens{}", granularity.period_suffix());
     let right_legend = Line::from(vec![
         Span::styled(
@@ -1353,9 +1351,9 @@ fn render_detail_charts(
         Span::styled("■", Style::default().fg(t.tokens_out)),
         Span::styled(" output", Style::default().fg(t.text_dim)),
     ]);
-    frame.render_widget(Paragraph::new(right_legend), right_split[0]);
+    frame.render_widget(Paragraph::new(right_legend), tok_rows[0]);
 
-    let chart_w_right = right_split[1].width.saturating_sub(7) as usize;
+    let chart_w_right = tok_rows[1].width.saturating_sub(7) as usize;
 
     let (tok_in, tok_out, right_x_labels) = match granularity {
         DetailGranularity::Daily => {
@@ -1397,7 +1395,7 @@ fn render_detail_charts(
 
     render_stacked_bar_chart(
         frame,
-        right_split[1],
+        tok_rows[1],
         &tok_in,
         &tok_out,
         t.tokens_in,
@@ -1407,7 +1405,7 @@ fn render_detail_charts(
     );
 
     // Model distribution bar
-    render_model_bar(frame, vert_split[2], &card.model_shares);
+    render_model_bar(frame, outer_rows[1], &card.model_shares);
 }
 
 fn render_model_bar(frame: &mut Frame, area: Rect, model_shares: &[(String, f64)]) {
