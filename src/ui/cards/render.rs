@@ -897,6 +897,7 @@ pub fn render_detail(
     minute_tokens: &crate::data::tokens::MinuteTokens,
     minute_model_costs: &MinuteModelCosts,
     sessions: &[crate::data::sessions::SessionSummary],
+    session_scroll: usize,
 ) {
     let card = match cards.first() {
         Some(c) => c,
@@ -957,7 +958,7 @@ pub fn render_detail(
             .constraints([Constraint::Min(4), Constraint::Length(sess_h)])
             .split(rows[2]);
         render_detail_charts(frame, split[0], card, granularity, range_start, range_end, minute_tokens, minute_model_costs);
-        render_recent_sessions(frame, split[1], sessions);
+        render_recent_sessions(frame, split[1], sessions, session_scroll);
     } else {
         render_detail_charts(
             frame,
@@ -1006,21 +1007,30 @@ fn fit_cols(s: &str, max_cols: usize) -> String {
     out
 }
 
-fn render_recent_sessions(frame: &mut Frame, area: Rect, sessions: &[crate::data::sessions::SessionSummary]) {
+fn render_recent_sessions(frame: &mut Frame, area: Rect, sessions: &[crate::data::sessions::SessionSummary], scroll: usize) {
     use crate::config::discovery::Provider;
     if area.height < 2 {
         return;
     }
     let t = theme();
+    let rows = area.height.saturating_sub(1) as usize;
+    // Clamp scroll defensively.
+    let scroll = scroll.min(sessions.len().saturating_sub(1));
+    // Build header with optional scroll indicator.
+    let header_text = if sessions.len() > rows {
+        let end = (scroll + rows).min(sessions.len());
+        format!(" Recent sessions  {}-{}/{} \u{2191}\u{2193}", scroll + 1, end, sessions.len())
+    } else {
+        " Recent sessions".to_string()
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " Recent sessions",
+            header_text,
             Style::default().fg(t.text_secondary).add_modifier(Modifier::BOLD),
         ))),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    let rows = area.height.saturating_sub(1) as usize;
-    for (i, s) in sessions.iter().take(rows).enumerate() {
+    for (i, s) in sessions.iter().skip(scroll).take(rows).enumerate() {
         let tag = match s.provider {
             Provider::Claude => "CC",
             Provider::Codex => "CX",

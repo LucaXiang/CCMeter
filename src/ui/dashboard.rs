@@ -418,6 +418,7 @@ impl App {
                 &self.data.minute_tokens,
                 &self.render.minute_model,
                 &self.render.detail_sessions,
+                self.detail_session_scroll,
             );
         } else {
             cards::render(frame, chunks[2], &self.render.cards, anim_tick, range_start, range_end, self.card_scroll);

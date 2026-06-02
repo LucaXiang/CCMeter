@@ -136,6 +136,7 @@ pub(crate) struct App {
 
     pub(crate) render_dirty: bool,
     pub(crate) card_scroll: usize,
+    pub(crate) detail_session_scroll: usize,
     pub(crate) rate_tracking_selected: usize,
 
     pub(crate) reloading: bool,
@@ -274,6 +275,7 @@ impl App {
             project_index,
             render_dirty: false,
             card_scroll: 0,
+            detail_session_scroll: 0,
             rate_tracking_selected: 0,
             reloading: false,
             reload_tx,
@@ -651,12 +653,14 @@ impl App {
                     self.config.settings.time_filter = Some(self.time_filter);
                     self.config.settings.save();
                     self.card_scroll = 0;
+                    self.detail_session_scroll = 0;
                     self.render_dirty = true;
                     return true;
                 }
                 KeyCode::BackTab => {
                     self.source_index = (self.source_index + 1) % self.config.sources.len();
                     self.card_scroll = 0;
+                    self.detail_session_scroll = 0;
                     self.recompute_tokens();
                     return true;
                 }
@@ -691,6 +695,7 @@ impl App {
                 KeyCode::Esc if self.project_index.is_some() => {
                     self.project_index = None;
                     self.card_scroll = 0;
+                    self.detail_session_scroll = 0;
                     self.recompute_tokens();
                 }
                 KeyCode::Char('q') => return false,
@@ -704,10 +709,19 @@ impl App {
                     self.view = View::Settings(Box::new(SettingsState::new(&self.config.groups)));
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.card_scroll = self.card_scroll.saturating_add(1);
+                    if self.project_index.is_some() {
+                        let max = self.render.detail_sessions.len().saturating_sub(1);
+                        self.detail_session_scroll = (self.detail_session_scroll + 1).min(max);
+                    } else {
+                        self.card_scroll = self.card_scroll.saturating_add(1);
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.card_scroll = self.card_scroll.saturating_sub(1);
+                    if self.project_index.is_some() {
+                        self.detail_session_scroll = self.detail_session_scroll.saturating_sub(1);
+                    } else {
+                        self.card_scroll = self.card_scroll.saturating_sub(1);
+                    }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     let len = self.render.display_order.len();
@@ -717,6 +731,7 @@ impl App {
                         _ => None,
                     };
                     self.card_scroll = 0;
+                    self.detail_session_scroll = 0;
                     self.recompute_tokens();
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -728,6 +743,7 @@ impl App {
                         _ => None,
                     };
                     self.card_scroll = 0;
+                    self.detail_session_scroll = 0;
                     self.recompute_tokens();
                 }
                 _ => {}
