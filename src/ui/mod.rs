@@ -1,6 +1,7 @@
 pub mod cards;
 pub mod dashboard;
 pub mod heatmap;
+pub mod i18n;
 pub mod loading;
 pub mod rate_tracking;
 pub mod settings_view;
