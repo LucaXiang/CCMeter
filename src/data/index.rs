@@ -711,7 +711,7 @@ mod tests {
     use crate::data::codex::{CodexDelta, CODEX_ROOT};
 
     fn codex(date: NaiveDate, minute: u16, model: &str, input: u64, cache: u64, output: u64) -> CodexDelta {
-        CodexDelta { cwd: "/p".into(), date, minute, model: model.into(), input, cache_read: cache, output }
+        CodexDelta { cwd: "/p".into(), session_id: String::new(), date, minute, model: model.into(), input, cache_read: cache, output }
     }
 
     #[test]

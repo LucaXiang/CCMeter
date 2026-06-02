@@ -11,6 +11,7 @@ use chrono::NaiveDate;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodexDelta {
     pub cwd: String,
+    pub session_id: String,
     pub date: NaiveDate,
     /// Local minute-of-day (0..1440) of the token_count event, so the delta
     /// can be folded into the minute-keyed [`EventIndex`] for intraday views.
@@ -117,8 +118,8 @@ mod tests {
     #[test]
     fn aggregates_deltas_into_cache_under_codex_root() {
         let deltas = vec![
-            CodexDelta { cwd: "/p".into(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), minute: 0, model: "gpt-5.5".into(), input: 10, cache_read: 100, output: 5 },
-            CodexDelta { cwd: "/p".into(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), minute: 0, model: "gpt-5.5".into(), input: 20, cache_read: 0, output: 15 },
+            CodexDelta { cwd: "/p".into(), session_id: String::new(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), minute: 0, model: "gpt-5.5".into(), input: 10, cache_read: 100, output: 5 },
+            CodexDelta { cwd: "/p".into(), session_id: String::new(), date: chrono::NaiveDate::from_ymd_opt(2026,5,4).unwrap(), minute: 0, model: "gpt-5.5".into(), input: 20, cache_read: 0, output: 15 },
         ];
         let (cache, cwds) = aggregate(&deltas);
         let root = cache.get_root(CODEX_ROOT).unwrap();
@@ -139,6 +140,7 @@ mod tests {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
         let deltas = vec![CodexDelta {
             cwd: "/p".into(),
+            session_id: String::new(),
             date,
             minute: 0,
             model: "gpt-5.5".into(),

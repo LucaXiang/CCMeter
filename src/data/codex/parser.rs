@@ -22,6 +22,7 @@ struct Line {
 struct Payload {
     #[serde(rename = "type")]
     kind: Option<String>,
+    id: Option<String>,
     cwd: Option<String>,
     model: Option<String>,
     info: Option<Info>,
@@ -62,6 +63,7 @@ pub fn parse_codex_file(path: &Path) -> Vec<CodexDelta> {
 
 pub(crate) fn parse_codex_str(raw: &str, _session_file: &str) -> Vec<CodexDelta> {
     let mut cwd: Option<String> = None;
+    let mut session_id = String::new();
     let mut model = String::new();
     let mut prev = Usage::default();
     let mut out = Vec::new();
@@ -80,6 +82,7 @@ pub(crate) fn parse_codex_str(raw: &str, _session_file: &str) -> Vec<CodexDelta>
                     if let Some(c) = &p.cwd {
                         cwd = Some(c.clone());
                     }
+                    session_id = p.id.clone().unwrap_or_default();
                 }
             }
             Some("turn_context") => {
@@ -132,6 +135,7 @@ pub(crate) fn parse_codex_str(raw: &str, _session_file: &str) -> Vec<CodexDelta>
                 let minute = local.hour() as u16 * 60 + local.minute() as u16;
                 out.push(CodexDelta {
                     cwd: cwd.clone(),
+                    session_id: session_id.clone(),
                     date,
                     minute,
                     model: model.clone(),
@@ -223,5 +227,16 @@ mod tests {
     fn ignores_non_token_and_missing_cwd() {
         let raw = r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}}}}"#;
         assert!(parse_codex_str(raw, "f.jsonl").is_empty());
+    }
+
+    #[test]
+    fn stamps_session_id_from_session_meta() {
+        let raw = lines(&[
+            r#"{"type":"session_meta","timestamp":"2026-05-04T10:00:00.000Z","payload":{"id":"uuid-1","cwd":"/proj"}}"#,
+            r#"{"type":"turn_context","timestamp":"2026-05-04T10:00:01.000Z","payload":{"model":"gpt-5.5"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":60}}}}"#,
+        ]);
+        let out = parse_codex_str(&raw, "f.jsonl");
+        assert!(out.iter().all(|d| d.session_id == "uuid-1"));
     }
 }
