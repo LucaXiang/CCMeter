@@ -94,7 +94,11 @@ fn aggregate(deltas: Vec<CodexDelta>) -> (Cache, HashSet<String>) {
         entry.input += d.input;
         entry.output += d.output;
         entry.cache_read += d.cache_read;
-        entry.cost += cost_from_tokens(&d.model, d.input, d.output, d.cache_read, 0);
+        // `d.input` is fresh (cache-exclusive); cost_from_tokens wants a
+        // cache-inclusive input (it derives fresh = input - cache_read), so
+        // reconstruct it as fresh + cache_read. Pricing is unchanged — only
+        // the stored `input` count became fresh.
+        entry.cost += cost_from_tokens(&d.model, d.input + d.cache_read, d.output, d.cache_read, 0);
     }
     (cache, cwds)
 }
@@ -117,6 +121,28 @@ mod tests {
         assert_eq!(e.output, 20);
         assert!(e.cost > 0.0);
         assert!(cwds.contains("/p"));
+    }
+
+    #[test]
+    fn aggregate_cost_prices_input_as_fresh_plus_cache_read() {
+        // CodexDelta.input is fresh (cache-exclusive). cost_from_tokens expects
+        // a cache-INCLUSIVE input (it derives fresh = input - cache_read), so
+        // aggregate must reconstruct input + cache_read — never pass the bare
+        // fresh value (which would saturate fresh to 0 and under-charge).
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 5, 4).unwrap();
+        let deltas = vec![CodexDelta {
+            cwd: "/p".into(),
+            date,
+            model: "gpt-5.5".into(),
+            input: 1000,
+            cache_read: 4000,
+            output: 200,
+        }];
+        let (cache, _) = aggregate(deltas);
+        let e = &cache.get_root(CODEX_ROOT).unwrap()["/p"]["2026-05-04"];
+        let expected = cost_from_tokens("gpt-5.5", 1000 + 4000, 200, 4000, 0);
+        assert!((e.cost - expected).abs() < 1e-12, "got {}, want {}", e.cost, expected);
+        assert!(e.cost > 0.0);
     }
 
     #[test]
