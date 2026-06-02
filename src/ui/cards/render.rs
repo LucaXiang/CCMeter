@@ -384,6 +384,25 @@ fn render_card(
 
     // Line 1: cost + time + efficiency with mini gauge
     let cost_str = format_cost(card.total_cost);
+    // Provider split shown only on mixed (Claude+Codex) cards; keep single-
+    // provider cards clean. Plain ASCII labels avoid unicode-width surprises.
+    let split_str = if card.cost_codex > 0.0 && card.cost_claude > 0.0 {
+        format!(
+            "  cc {} · cx {}",
+            format_cost(card.cost_claude),
+            format_cost(card.cost_codex)
+        )
+    } else {
+        String::new()
+    };
+    // Only render the split if line 1 has room for it (cost + split + a little slack).
+    let split_str = if !split_str.is_empty()
+        && content_width > cost_str.len() + split_str.len() + 8
+    {
+        split_str
+    } else {
+        String::new()
+    };
     let time_str = if card.time_minutes > 0 {
         format!("⏱ {}", format_duration(card.time_minutes))
     } else {
@@ -399,7 +418,8 @@ fn render_card(
             time_str.len() + 2
         };
         let total_len = label.len() + 4 + num_str.len();
-        let padding = content_width.saturating_sub(cost_str.len() + time_extra + total_len);
+        let padding = content_width
+            .saturating_sub(cost_str.len() + split_str.len() + time_extra + total_len);
         vec![
             Span::raw(" ".repeat(padding)),
             Span::styled(label, Style::default().fg(t.text_secondary)),
@@ -413,13 +433,17 @@ fn render_card(
         } else {
             time_str.len() + 2
         };
-        let padding = content_width.saturating_sub(cost_str.len() + time_extra);
+        let padding =
+            content_width.saturating_sub(cost_str.len() + split_str.len() + time_extra);
         vec![Span::raw(" ".repeat(padding))]
     };
     let mut line1_spans = vec![Span::styled(
         &cost_str,
         Style::default().fg(t.cost).add_modifier(Modifier::BOLD),
     )];
+    if !split_str.is_empty() {
+        line1_spans.push(Span::styled(&split_str, Style::default().fg(t.text_dim)));
+    }
     if !time_str.is_empty() {
         line1_spans.push(Span::raw("  "));
         line1_spans.push(Span::styled(&time_str, Style::default().fg(t.duration)));
