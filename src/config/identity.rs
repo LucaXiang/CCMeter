@@ -118,6 +118,7 @@ impl IdentityStore {
         if matches!(self.map.get(&cwd).map(|i| i.source), Some(IdentitySource::LiveGit)) {
             return;
         }
+        let remote_url = normalize_remote_url(&remote_url);
         self.insert(cwd, ResolvedIdentity {
             remote_url: Some(remote_url),
             canonical_root,

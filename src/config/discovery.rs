@@ -71,6 +71,7 @@ pub enum OverrideInfo {
 }
 
 /// Result of resolving a project's git identity.
+// TODO: remove once group_by_identity is migrated to the identity-module store (the Claude-only path still uses this legacy struct).
 #[derive(Debug, Clone)]
 struct ResolvedIdentity {
     root_path: PathBuf,
@@ -610,6 +611,10 @@ fn finalize_groups(
     groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     groups
 }
+
+// ---------------------------------------------------------------------------
+// Store-aware grouping (provider-unified: Claude + Codex)
+// ---------------------------------------------------------------------------
 
 /// Live-only identity: returns `None` unless the cwd exists on disk and git
 /// resolves. Uses the existing `find_git_root` (worktree → main repo) and
