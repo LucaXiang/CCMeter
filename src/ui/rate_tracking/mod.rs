@@ -72,6 +72,19 @@ pub(crate) fn render(
         .map(|c| c.source_root.to_string_lossy().to_string())
         .collect();
 
+    // Per-credential API-equivalent spend over the trailing 7 days, shown in
+    // each card's title so both Claude and Codex carry a live $ figure.
+    let now_local = chrono::Local::now().naive_local();
+    let week_ago = now_local - chrono::Duration::days(7);
+    let week_costs: Vec<f64> = credentials
+        .iter()
+        .map(|c| {
+            let root = c.source_root.to_string_lossy();
+            let (f, ca, o) = index.cost_in_window_split(&root, week_ago, now_local);
+            f + ca + o
+        })
+        .collect();
+
     let selected_cred = selected
         .filter(|&i| i < credentials.len())
         .map(|i| &credentials[i]);
@@ -103,7 +116,14 @@ pub(crate) fn render(
         ])
         .split(columns[1]);
 
-    render_credential_cards(frame, right_rows[0], credentials, selected, &credential_roots);
+    render_credential_cards(
+        frame,
+        right_rows[0],
+        credentials,
+        selected,
+        &credential_roots,
+        &week_costs,
+    );
 
     let bars = compute_session_bars(
         &filtered_hits,

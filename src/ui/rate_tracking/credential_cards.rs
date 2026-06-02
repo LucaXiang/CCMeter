@@ -42,6 +42,7 @@ pub(super) fn render_credential_cards(
     credentials: &[OAuthCredential],
     selected: Option<usize>,
     credential_roots: &[String],
+    week_costs: &[f64],
 ) {
     let t = theme();
 
@@ -78,7 +79,8 @@ pub(super) fn render_credential_cards(
 
     for (i, cred) in credentials.iter().enumerate() {
         let is_selected = selected == Some(i);
-        render_card(frame, cols[i], cred, credential_roots, is_selected);
+        let week_cost = week_costs.get(i).copied().unwrap_or(0.0);
+        render_card(frame, cols[i], cred, credential_roots, is_selected, week_cost);
     }
 }
 
@@ -88,6 +90,7 @@ fn render_card(
     cred: &OAuthCredential,
     credential_roots: &[String],
     is_selected: bool,
+    week_cost: f64,
 ) {
     let t = theme();
     let root_str = cred.source_root.to_string_lossy().to_string();
@@ -98,8 +101,10 @@ fn render_card(
     let sub = cred.subscription_type.as_deref().unwrap_or("?");
     let title_left = format!(" {} ({}) ", name, sub);
 
-    // Extra usage in title bar (right-aligned)
-    let title_right = extra_usage_title(cred.usage.as_ref());
+    // Title bar, right-aligned: real overage charge if the provider bills one,
+    // otherwise the trailing-7d API-equivalent spend (so the slot is never an
+    // empty $0.00/$300.00 and Codex — which has no overage — also shows a $).
+    let title_right = spend_title(week_cost, cred.usage.as_ref());
 
     let border_color = if is_selected {
         t.border_highlight
@@ -138,6 +143,24 @@ fn render_card(
             frame.render_widget(Paragraph::new(lines), inner);
         }
     }
+}
+
+/// Right-side title spans: the real overage bar when the provider is actually
+/// charging overage, otherwise the trailing-7d API-equivalent spend.
+fn spend_title(week_cost: f64, usage: Option<&UsageReport>) -> Vec<Span<'static>> {
+    let has_overage_charge = usage
+        .and_then(|u| u.extra_usage.as_ref())
+        .map(|e| e.is_enabled && e.used_credits.unwrap_or(0.0) > 0.0)
+        .unwrap_or(false);
+    if has_overage_charge {
+        return extra_usage_title(usage);
+    }
+    vec![Span::styled(
+        format!(" {} ·7d ", crate::data::models::format_cost(week_cost)),
+        Style::default()
+            .fg(theme().cost)
+            .add_modifier(Modifier::BOLD),
+    )]
 }
 
 /// Build extra usage spans for the block title (right side).
