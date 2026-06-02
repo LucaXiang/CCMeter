@@ -983,6 +983,40 @@ pub fn render_detail(
     }
 }
 
+/// Terminal display width of a char: East Asian Wide/Fullwidth ranges count as
+/// 2 columns, everything else as 1. Good enough for session titles (CJK vs ASCII).
+fn char_cols(c: char) -> usize {
+    let u = c as u32;
+    let wide = (0x1100..=0x115F).contains(&u)      // Hangul Jamo
+        || (0x2E80..=0x303E).contains(&u)          // CJK radicals, Kangxi, punctuation
+        || (0x3041..=0x33FF).contains(&u)          // Hiragana, Katakana, CJK symbols
+        || (0x3400..=0x4DBF).contains(&u)          // CJK Ext A
+        || (0x4E00..=0x9FFF).contains(&u)          // CJK Unified
+        || (0xA000..=0xA4CF).contains(&u)          // Yi
+        || (0xAC00..=0xD7A3).contains(&u)          // Hangul syllables
+        || (0xF900..=0xFAFF).contains(&u)          // CJK compat ideographs
+        || (0xFE30..=0xFE4F).contains(&u)          // CJK compat forms
+        || (0xFF00..=0xFF60).contains(&u)          // Fullwidth forms
+        || (0xFFE0..=0xFFE6).contains(&u)          // Fullwidth signs
+        || (0x20000..=0x3FFFD).contains(&u);       // CJK Ext B+ (supplementary)
+    if wide { 2 } else { 1 }
+}
+
+/// Truncate `s` to at most `max_cols` display columns, then pad with spaces to
+/// exactly `max_cols` columns. Returns the padded string.
+fn fit_cols(s: &str, max_cols: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let w = char_cols(c);
+        if used + w > max_cols { break; }
+        out.push(c);
+        used += w;
+    }
+    for _ in used..max_cols { out.push(' '); }
+    out
+}
+
 fn render_recent_sessions(frame: &mut Frame, area: Rect, sessions: &[crate::data::sessions::SessionSummary]) {
     use crate::config::discovery::Provider;
     if area.height < 2 {
@@ -1010,10 +1044,7 @@ fn render_recent_sessions(frame: &mut Frame, area: Rect, sessions: &[crate::data
         // title gets the remaining width; tokens/cost/date right-aligned.
         let right = format!("{:>8} {:>8} {}", format_tokens(s.tokens), format_cost(s.cost), date);
         let title_w = (area.width as usize).saturating_sub(right.len() + 5).max(4);
-        let mut title: String = s.title.chars().take(title_w).collect();
-        while title.chars().count() < title_w {
-            title.push(' ');
-        }
+        let title = fit_cols(&s.title, title_w);
         let line = Line::from(vec![
             Span::styled(format!("{tag} "), Style::default().fg(tag_color)),
             Span::styled(title, Style::default().fg(t.text_primary)),
@@ -1023,6 +1054,24 @@ fn render_recent_sessions(frame: &mut Frame, area: Rect, sessions: &[crate::data
             Paragraph::new(line),
             Rect::new(area.x + 1, area.y + 1 + i as u16, area.width.saturating_sub(1), 1),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_cols_pads_ascii_to_width() {
+        assert_eq!(fit_cols("abc", 6), "abc   ");
+    }
+
+    #[test]
+    fn fit_cols_counts_cjk_as_two_columns() {
+        // 3 CJK chars = 6 cols; in a width-6 field they exactly fill it (no padding).
+        assert_eq!(fit_cols("了解项", 6), "了解项");
+        // width-5 field can only fit 2 CJK (4 cols) + 1 pad space.
+        assert_eq!(fit_cols("了解项", 5), "了解 ");
     }
 }
 
