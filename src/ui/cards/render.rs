@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::ui::theme::theme;
 
-const CARD_HEIGHT: u16 = 6;
+const CARD_HEIGHT: u16 = 8;
 
 /// Cost per (project, model) bucketed by (date, minute of day).
 pub type MinuteModelCosts = HashMap<(String, String), HashMap<(NaiveDate, u16), f64>>;
@@ -382,80 +382,69 @@ fn render_card(
 
     let content_width = inner.width as usize;
 
-    // Line 1: cost + time + efficiency with mini gauge
+    // Line 1: cost (bold, left) + sessions count (dim, right-aligned)
     let cost_str = format_cost(card.total_cost);
-    // Provider split shown only on mixed (Claude+Codex) cards; keep single-
-    // provider cards clean. Plain ASCII labels avoid unicode-width surprises.
-    let split_str = if card.cost_codex > 0.0 && card.cost_claude > 0.0 {
-        format!(
+    let sess_str = format!("{} sess", card.sessions);
+    let l1_padding = content_width.saturating_sub(cost_str.len() + sess_str.len());
+    let line1 = Line::from(vec![
+        Span::styled(
+            cost_str.clone(),
+            Style::default().fg(t.cost).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(l1_padding)),
+        Span::styled(sess_str, Style::default().fg(t.text_dim)),
+    ]);
+
+    // Line 2: provider split (only when both Claude and Codex costs exist), else blank
+    let line2 = if card.cost_codex > 0.0 && card.cost_claude > 0.0 {
+        let split_str = format!(
             "  cc {} · cx {}",
             format_cost(card.cost_claude),
             format_cost(card.cost_codex)
-        )
+        );
+        Line::from(Span::styled(split_str, Style::default().fg(t.text_dim)))
     } else {
-        String::new()
+        Line::default()
     };
-    // Only render the split if line 1 has room for it (cost + split + a little slack).
-    let split_str = if !split_str.is_empty()
-        && content_width > cost_str.len() + split_str.len() + 8
-    {
-        split_str
-    } else {
-        String::new()
-    };
+
+    // Line 3: time (left) + efficiency gauge (right-aligned)
     let time_str = if card.time_minutes > 0 {
         format!("⏱ {}", format_duration(card.time_minutes))
     } else {
         String::new()
     };
-    let eff_spans: Vec<Span> = if card.efficiency > 0.0 {
+    let line3 = if card.efficiency > 0.0 {
         let gauge = efficiency_gauge(card.efficiency, quartiles);
         let num_str = format!(" {:.0} tok/ln", card.efficiency);
         let label = "⚡ ";
-        let time_extra = if time_str.is_empty() {
-            0
-        } else {
-            time_str.len() + 2
-        };
-        let total_len = label.len() + 4 + num_str.len();
-        let padding = content_width
-            .saturating_sub(cost_str.len() + split_str.len() + time_extra + total_len);
-        vec![
-            Span::raw(" ".repeat(padding)),
-            Span::styled(label, Style::default().fg(t.text_secondary)),
-            gauge.0,
-            gauge.1,
-            Span::styled(num_str, Style::default().fg(t.text_secondary)),
-        ]
+        // gauge is 4 chars wide (4 block chars)
+        let eff_group_len = label.len() + 4 + num_str.len();
+        let l3_padding =
+            content_width.saturating_sub(time_str.len() + eff_group_len);
+        let mut spans: Vec<Span> = Vec::new();
+        if !time_str.is_empty() {
+            spans.push(Span::styled(
+                time_str.clone(),
+                Style::default().fg(t.duration),
+            ));
+        }
+        spans.push(Span::raw(" ".repeat(l3_padding)));
+        spans.push(Span::styled(label, Style::default().fg(t.text_secondary)));
+        spans.push(gauge.0);
+        spans.push(gauge.1);
+        spans.push(Span::styled(num_str, Style::default().fg(t.text_secondary)));
+        Line::from(spans)
+    } else if !time_str.is_empty() {
+        Line::from(Span::styled(time_str, Style::default().fg(t.duration)))
     } else {
-        let time_extra = if time_str.is_empty() {
-            0
-        } else {
-            time_str.len() + 2
-        };
-        let padding =
-            content_width.saturating_sub(cost_str.len() + split_str.len() + time_extra);
-        vec![Span::raw(" ".repeat(padding))]
+        Line::default()
     };
-    let mut line1_spans = vec![Span::styled(
-        &cost_str,
-        Style::default().fg(t.cost).add_modifier(Modifier::BOLD),
-    )];
-    if !split_str.is_empty() {
-        line1_spans.push(Span::styled(&split_str, Style::default().fg(t.text_dim)));
-    }
-    if !time_str.is_empty() {
-        line1_spans.push(Span::raw("  "));
-        line1_spans.push(Span::styled(&time_str, Style::default().fg(t.duration)));
-    }
-    line1_spans.extend(eff_spans);
-    let line1 = Line::from(line1_spans);
 
-    // Line 2: tokens breakdown
+    // Line 4: tokens breakdown (moved from old line 2)
     let in_str = format!("in: {}", format_tokens(card.tokens_in));
     let out_str = format!("out: {}", format_tokens(card.tokens_out));
     let cache_str = format!("cache: {}", format_tokens(card.tokens_cache));
-    let line2 = Line::from(vec![
+    let line4 = Line::from(vec![
         Span::styled(&in_str, Style::default().fg(t.tokens_in)),
         Span::raw(" "),
         Span::styled(&out_str, Style::default().fg(t.tokens_out)),
@@ -463,17 +452,17 @@ fn render_card(
         Span::styled(&cache_str, Style::default().fg(t.cache)),
     ]);
 
-    // Line 3: lines added / deleted
+    // Line 5: lines added / deleted (moved from old line 3)
     let added_str = format!("+{}", card.lines_added);
     let deleted_str = format!("-{}", card.lines_deleted);
-    let line3 = Line::from(vec![
+    let line5 = Line::from(vec![
         Span::styled(added_str, Style::default().fg(t.lines_positive)),
         Span::raw(" "),
         Span::styled(deleted_str, Style::default().fg(t.lines_negative)),
     ]);
 
-    // Line 4: sparkline colored by model segments
-    let line4 = render_sparkline_with_models(
+    // Line 6: sparkline colored by model segments (moved from old line 4)
+    let line6 = render_sparkline_with_models(
         &card.daily_costs,
         &card.model_shares,
         content_width,
@@ -481,7 +470,7 @@ fn render_card(
         range_end,
     );
 
-    let text = vec![line1, line2, line3, line4];
+    let text = vec![line1, line2, line3, line4, line5, line6];
     let paragraph = Paragraph::new(text);
     frame.render_widget(paragraph, inner);
 }
