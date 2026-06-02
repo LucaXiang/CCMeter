@@ -907,6 +907,7 @@ pub fn render_detail(
     granularity: DetailGranularity,
     minute_tokens: &crate::data::tokens::MinuteTokens,
     minute_model_costs: &MinuteModelCosts,
+    sessions: &[crate::data::sessions::SessionSummary],
 ) {
     let card = match cards.first() {
         Some(c) => c,
@@ -960,16 +961,69 @@ pub fn render_detail(
 
     render_detail_metrics(frame, rows[0], card);
 
-    render_detail_charts(
-        frame,
-        rows[2],
-        card,
-        granularity,
-        range_start,
-        range_end,
-        minute_tokens,
-        minute_model_costs,
+    if !sessions.is_empty() && rows[2].height >= 8 {
+        let sess_h = ((sessions.len() as u16 + 1).min(rows[2].height / 2)).min(8);
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(4), Constraint::Length(sess_h)])
+            .split(rows[2]);
+        render_detail_charts(frame, split[0], card, granularity, range_start, range_end, minute_tokens, minute_model_costs);
+        render_recent_sessions(frame, split[1], sessions);
+    } else {
+        render_detail_charts(
+            frame,
+            rows[2],
+            card,
+            granularity,
+            range_start,
+            range_end,
+            minute_tokens,
+            minute_model_costs,
+        );
+    }
+}
+
+fn render_recent_sessions(frame: &mut Frame, area: Rect, sessions: &[crate::data::sessions::SessionSummary]) {
+    use crate::config::discovery::Provider;
+    if area.height < 2 {
+        return;
+    }
+    let t = theme();
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " Recent sessions",
+            Style::default().fg(t.text_secondary).add_modifier(Modifier::BOLD),
+        ))),
+        Rect::new(area.x, area.y, area.width, 1),
     );
+    let rows = area.height.saturating_sub(1) as usize;
+    for (i, s) in sessions.iter().take(rows).enumerate() {
+        let tag = match s.provider {
+            Provider::Claude => "CC",
+            Provider::Codex => "CX",
+        };
+        let tag_color = match s.provider {
+            Provider::Claude => t.model_color("opus"),
+            Provider::Codex => t.model_color("gpt-5.5"),
+        };
+        let date = s.last_date.format("%m-%d").to_string();
+        // title gets the remaining width; tokens/cost/date right-aligned.
+        let right = format!("{:>8} {:>8} {}", format_tokens(s.tokens), format_cost(s.cost), date);
+        let title_w = (area.width as usize).saturating_sub(right.len() + 5).max(4);
+        let mut title: String = s.title.chars().take(title_w).collect();
+        while title.chars().count() < title_w {
+            title.push(' ');
+        }
+        let line = Line::from(vec![
+            Span::styled(format!("{tag} "), Style::default().fg(tag_color)),
+            Span::styled(title, Style::default().fg(t.text_primary)),
+            Span::styled(format!(" {right}"), Style::default().fg(t.text_dim)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(area.x + 1, area.y + 1 + i as u16, area.width.saturating_sub(1), 1),
+        );
+    }
 }
 
 fn render_detail_metrics(frame: &mut Frame, area: Rect, card: &ProjectCard) {
