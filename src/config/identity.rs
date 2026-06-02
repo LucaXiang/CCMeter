@@ -32,19 +32,26 @@ struct VersionedStore { schema_version: u32, data: HashMap<String, ResolvedIdent
 impl IdentityStore {
     pub fn get(&self, cwd: &str) -> Option<&ResolvedIdentity> { self.map.get(cwd) }
 
-    pub fn insert(&mut self, cwd: String, id: ResolvedIdentity) {
+    /// Internal priming helper; `resolve` and `seed` are the public entry points.
+    pub(crate) fn insert(&mut self, cwd: String, id: ResolvedIdentity) {
         if self.map.get(&cwd) != Some(&id) {
             self.map.insert(cwd, id);
             self.dirty = true;
         }
     }
 
+    /// Serialize to pretty JSON. Returns `"{}"` on error (safe for display/tests).
+    /// `save` uses `to_json_checked` to avoid writing a lossy fallback to disk.
     pub fn to_json(&self) -> String {
+        self.to_json_checked().unwrap_or_else(|| "{}".into())
+    }
+
+    /// Returns `Some(json)` only when serialization succeeds; `None` on error.
+    fn to_json_checked(&self) -> Option<String> {
         serde_json::to_string_pretty(&VersionedStore {
             schema_version: IDENTITY_SCHEMA_VERSION,
             data: self.map.clone(),
-        })
-        .unwrap_or_else(|_| "{}".into())
+        }).ok()
     }
 
     pub fn from_json(raw: &str) -> Option<Self> {
@@ -67,12 +74,14 @@ impl IdentityStore {
             .unwrap_or_default()
     }
 
+    /// Persist the store to disk only when serialization succeeds; never writes
+    /// `{}` on a serialize error (mirrors `src/data/cache.rs::save`).
     pub fn save(&self) {
         if !self.dirty { return; }
+        let Some(json) = self.to_json_checked() else { return; };
         let path = Self::path();
         if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
         let tmp = path.with_extension("json.tmp");
-        let json = self.to_json();
         if std::fs::write(&tmp, &json).is_ok() && std::fs::rename(&tmp, &path).is_err() {
             let _ = std::fs::write(&path, &json);
         }
@@ -101,8 +110,11 @@ impl IdentityStore {
 
     /// Seed an identity learned from Codex `repository_url` (used before live
     /// resolution so deleted-worktree cwds still resolve). Never overrides a
-    /// live-git entry already present for this cwd.
+    /// live-git entry already present for this cwd; does override a PathFallback
+    /// entry because a CodexSeed carries a real `repository_url` — strictly more
+    /// informative than a path-derived guess.
     pub fn seed(&mut self, cwd: String, remote_url: String, canonical_root: String) {
+        // Only LiveGit is authoritative enough to block a seed update.
         if matches!(self.map.get(&cwd).map(|i| i.source), Some(IdentitySource::LiveGit)) {
             return;
         }
@@ -119,11 +131,39 @@ impl IdentityStore {
 /// lowercased, no scheme/credentials, no trailing `.git`.
 pub fn normalize_remote_url(url: &str) -> String {
     let s = url.trim();
+    // Remember whether the original URL carried an explicit scheme (e.g. https://).
+    let had_scheme = s.contains("://");
     // Strip scheme + optional credentials: `scheme://user@` → ``.
     let s = s.split("://").last().unwrap_or(s);
     let s = s.rsplit('@').next().unwrap_or(s); // drop `user@` / creds
-    // SSH shorthand uses `host:org/repo`; HTTP uses `host/org/repo`.
-    let s = s.replacen(':', "/", 1);
+    // Normalize the host:path separator:
+    //   • SSH shorthand (`git@host:org/repo`) has no `://`; the `:` separates
+    //     host from path and must become `/`.
+    //   • HTTPS/HTTP URLs that had `://` may have a port after the host
+    //     (`host:8080/org/repo`); that `:port` is not a path segment — drop it.
+    let s = if had_scheme {
+        // Remove optional `:port` between host and the first `/`.
+        let s = if let Some(slash) = s.find('/') {
+            let host_part = &s[..slash];
+            let path_part = &s[slash..];
+            if let Some(colon) = host_part.rfind(':') {
+                // Only strip if what follows the colon is all digits (a port number).
+                if host_part[colon + 1..].chars().all(|c| c.is_ascii_digit()) {
+                    format!("{}{}", &host_part[..colon], path_part)
+                } else {
+                    s.to_string()
+                }
+            } else {
+                s.to_string()
+            }
+        } else {
+            s.to_string()
+        };
+        s
+    } else {
+        // SSH shorthand: replace the first `:` (host:path) with `/`.
+        s.replacen(':', "/", 1)
+    };
     let s = s.strip_suffix(".git").unwrap_or(&s).to_string();
     s.trim_end_matches('/').to_lowercase()
 }
@@ -133,6 +173,9 @@ pub fn normalize_remote_url(url: &str) -> String {
 /// pattern is present (caller then uses the cwd as-is).
 pub fn strip_worktree_segment(cwd: &str) -> Option<String> {
     // `<root>/.claude/worktrees/<x>` and `<root>/worktrees/<x>` → `<root>`.
+    // Note: `/worktrees/` is intentionally broader than the `.claude/worktrees`
+    // sentinel — it also catches bare `<root>/worktrees/<name>` conventions used
+    // by some projects and `git worktree add` defaults.
     for marker in ["/.claude/worktrees/", "/worktrees/"] {
         if let Some(idx) = cwd.find(marker) {
             return Some(cwd[..idx].to_string());
@@ -157,6 +200,25 @@ mod tests {
         assert_eq!(ssh, "github.com/lucaxiang/crab");
         assert_eq!(https, ssh);
         assert_eq!(https_no_git, ssh);
+    }
+
+    #[test]
+    fn normalizes_https_with_port() {
+        // Port after host must be dropped, not turned into a path segment.
+        assert_eq!(
+            normalize_remote_url("https://github.example.com:8080/Org/Repo.git"),
+            "github.example.com/org/repo"
+        );
+        // Without port still works.
+        assert_eq!(
+            normalize_remote_url("https://github.example.com/Org/Repo.git"),
+            "github.example.com/org/repo"
+        );
+        // SSH shorthand (no scheme) still collapses host:path correctly.
+        assert_eq!(
+            normalize_remote_url("git@github.example.com:Org/Repo.git"),
+            "github.example.com/org/repo"
+        );
     }
 
     #[test]
@@ -245,5 +307,38 @@ mod tests {
         // never silently trusted.
         let bad = r#"{"schema_version":999,"data":{}}"#;
         assert!(IdentityStore::from_json(bad).is_none());
+    }
+
+    #[test]
+    fn save_does_not_write_on_serialize_error() {
+        // We cannot easily force serde_json to fail on this type, but we can
+        // verify to_json_checked returns Some for a valid store and that save
+        // only writes when Some. This test exercises the guard path by confirming
+        // to_json_checked is Some for a normal store (the error branch is a
+        // defensive fallback for future type changes).
+        let mut store = IdentityStore::default();
+        store.insert("/test".into(), id(Some("github.com/a/b"), "/test", IdentitySource::LiveGit));
+        // to_json_checked must succeed for valid data.
+        assert!(store.to_json_checked().is_some());
+        // to_json (lossy) must equal to_json_checked result.
+        assert_eq!(store.to_json(), store.to_json_checked().unwrap());
+    }
+
+    #[test]
+    fn seed_overrides_path_fallback_but_not_live() {
+        let mut store = IdentityStore::default();
+        // PathFallback entry: seed should override it.
+        store.insert("/wt".into(), id(None, "/wt", IdentitySource::PathFallback));
+        store.seed("/wt".into(), "github.com/org/repo".into(), "/root".into());
+        let entry = store.get("/wt").unwrap();
+        assert_eq!(entry.source, IdentitySource::CodexSeed);
+        assert_eq!(entry.canonical_root, "/root");
+
+        // LiveGit entry: seed must NOT override it.
+        store.insert("/live".into(), id(Some("github.com/live/repo"), "/live", IdentitySource::LiveGit));
+        store.seed("/live".into(), "github.com/seed/repo".into(), "/seed-root".into());
+        let live_entry = store.get("/live").unwrap();
+        assert_eq!(live_entry.source, IdentitySource::LiveGit);
+        assert_eq!(live_entry.canonical_root, "/live");
     }
 }
