@@ -25,8 +25,8 @@ impl SettingsTab {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Projects => "Projects",
-            Self::Display => "Display",
+            Self::Projects => crate::ui::i18n::t("Projects"),
+            Self::Display => crate::ui::i18n::t("Display"),
         }
     }
 
@@ -582,7 +582,7 @@ impl SettingsState {
         frame.render_widget(Clear, modal_area);
 
         let block = Block::default()
-            .title(" Reset all overrides ")
+            .title(crate::ui::i18n::t(" Reset all overrides "))
             .title_style(
                 Style::default()
                     .fg(t.lines_negative)
@@ -595,7 +595,7 @@ impl SettingsState {
         let inner = block.inner(modal_area);
         frame.render_widget(block, modal_area);
 
-        let text = Paragraph::new(Line::from("Are you sure?")).alignment(Alignment::Center);
+        let text = Paragraph::new(Line::from(crate::ui::i18n::t("Are you sure?"))).alignment(Alignment::Center);
         frame.render_widget(text, Rect::new(inner.x, inner.y, inner.width, 1));
 
         let hints = Paragraph::new(Line::from(vec![
@@ -605,14 +605,14 @@ impl SettingsState {
                     .fg(t.lines_negative)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Confirm   "),
+            Span::raw(crate::ui::i18n::t("Confirm")),
             Span::styled(
                 " Esc ",
                 Style::default()
                     .fg(t.lines_negative)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Cancel"),
+            Span::raw(crate::ui::i18n::t("Cancel")),
         ]))
         .alignment(Alignment::Center);
         frame.render_widget(hints, Rect::new(inner.x, inner.y + 2, inner.width, 1));
@@ -629,7 +629,7 @@ impl SettingsState {
         frame.render_widget(Clear, modal_area);
 
         let block = Block::default()
-            .title(" Rename project ")
+            .title(crate::ui::i18n::t(" Rename project "))
             .title_style(Style::default().fg(t.duration).add_modifier(Modifier::BOLD))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(t.duration))
@@ -641,7 +641,7 @@ impl SettingsState {
         let label_area = Rect::new(inner.x, inner.y, inner.width, 1);
         let original = truncate_str(&modal.original_name, inner.width as usize);
         let label = Paragraph::new(Line::from(vec![
-            Span::styled("was: ", Style::default().fg(t.text_dim)),
+            Span::styled(crate::ui::i18n::t("was: "), Style::default().fg(t.text_dim)),
             Span::styled(
                 original,
                 Style::default()
@@ -688,12 +688,12 @@ impl SettingsState {
                 " Enter ",
                 Style::default().fg(t.duration).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Confirm   "),
+            Span::raw(crate::ui::i18n::t("Confirm")),
             Span::styled(
                 " Esc ",
                 Style::default().fg(t.duration).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Cancel"),
+            Span::raw(crate::ui::i18n::t("Cancel")),
         ]))
         .alignment(Alignment::Center);
         frame.render_widget(hints, hints_area);
@@ -708,9 +708,9 @@ impl SettingsState {
     ) {
         let t = theme();
         let title = if self.merge_first.is_some() {
-            " Settings — MERGE: select 2nd project "
+            crate::ui::i18n::t(" Settings — MERGE: select 2nd project ")
         } else {
-            " Settings — Projects "
+            crate::ui::i18n::t(" Settings — Projects ")
         };
 
         let content_width = area.width.saturating_sub(4) as usize; // borders + padding
@@ -776,11 +776,11 @@ impl SettingsState {
         let prefix = format!("{star_ch}{hidden_ch}{arrow_ch} "); // 4 display columns
 
         // Sessions always right-aligned, tags right after the name
-        let sessions_str = format!("{:>5} sessions", group.total_sessions);
+        let sessions_str = format!("{:>5}{}", group.total_sessions, crate::ui::i18n::t(" sessions"));
 
         let override_tag: &str = match &group.override_info {
-            Some(OverrideInfo::Split { .. }) => " [split]",
-            Some(OverrideInfo::Merged) => " [merged]",
+            Some(OverrideInfo::Split { .. }) => crate::ui::i18n::t(" [split]"),
+            Some(OverrideInfo::Merged) => crate::ui::i18n::t(" [merged]"),
             None => "",
         };
         // Layout: prefix(4) | name | tags | pad... | sessions
@@ -868,7 +868,7 @@ impl SettingsState {
             }
             None => source.dir_name.clone(),
         };
-        let files_str = format!("{:>4} sessions", source.session_files.len());
+        let files_str = format!("{:>4}{}", source.session_files.len(), crate::ui::i18n::t(" sessions"));
 
         // "    \u{2514} " = 6 display columns (4 spaces + └ + space)
         let prefix = "    \u{2514} ";
@@ -904,7 +904,7 @@ impl SettingsState {
         let heatmap_focused = self.display_row == 0;
         let heatmap_label = Line::from(vec![
             Span::styled(
-                "  Heatmap mode: ",
+                crate::ui::i18n::t("  Heatmap mode: "),
                 if heatmap_focused {
                     Style::default().fg(t.text_dim)
                 } else {
@@ -912,7 +912,7 @@ impl SettingsState {
                 },
             ),
             Span::styled(
-                if is_expanded { "Expanded" } else { "Compact" },
+                if is_expanded { crate::ui::i18n::t("Expanded") } else { crate::ui::i18n::t("Compact") },
                 if heatmap_focused {
                     Style::default()
                         .fg(t.heatmap_title)
@@ -938,7 +938,7 @@ impl SettingsState {
         let is_zh = i18n_current() == Lang::Zh;
         let lang_label = Line::from(vec![
             Span::styled(
-                "  Language: ",
+                crate::ui::i18n::t("  Language: "),
                 if lang_focused {
                     Style::default().fg(t.text_dim)
                 } else {
@@ -1003,7 +1003,7 @@ impl SettingsState {
     fn render_mini_heatmap(&self, frame: &mut Frame, area: Rect, is_active: bool, expanded: bool) {
         let t = theme();
 
-        let label = if expanded { "Expanded" } else { "Compact" };
+        let label = if expanded { crate::ui::i18n::t("Expanded") } else { crate::ui::i18n::t("Compact") };
         let (border_color, title_style) = if is_active {
             (
                 t.heatmap_title,
@@ -1018,7 +1018,7 @@ impl SettingsState {
         let mut title_spans = vec![Span::styled(format!(" {} ", label), title_style)];
         if is_active {
             title_spans.push(Span::styled(
-                " \u{25c0} active ",
+                crate::ui::i18n::t(" ◀ active "),
                 Style::default()
                     .fg(t.heatmap_title)
                     .add_modifier(Modifier::DIM),
@@ -1085,13 +1085,13 @@ impl SettingsState {
     fn render_display_status_bar(&self, frame: &mut Frame, area: Rect) {
         let hints = vec![
             Span::styled(" ↑↓ ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("Navigate   "),
+            Span::raw(crate::ui::i18n::t("Navigate   ")),
             Span::styled(" ←→ ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("Toggle   "),
+            Span::raw(crate::ui::i18n::t("Toggle   ")),
             Span::styled(" Tab ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("Switch tab   "),
+            Span::raw(crate::ui::i18n::t("Switch tab   ")),
             Span::styled(" . ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("Back"),
+            Span::raw(crate::ui::i18n::t("Back")),
         ];
         render_hint_bar(frame, area, hints);
     }
@@ -1106,14 +1106,14 @@ impl SettingsState {
         let hints = if self.merge_first.is_some() {
             vec![
                 Span::styled(" m ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("Confirm merge   "),
+                Span::raw(crate::ui::i18n::t("Confirm merge   ")),
                 Span::styled(" Esc ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("Cancel"),
+                Span::raw(crate::ui::i18n::t("Cancel")),
             ]
         } else {
             let mut h = vec![
                 Span::styled(" ↑↓ ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("Navigate   "),
+                Span::raw(crate::ui::i18n::t("Navigate   ")),
             ];
 
             match self.rows.get(self.selected) {
@@ -1123,52 +1123,52 @@ impl SettingsState {
                         " Enter ",
                         Style::default().add_modifier(Modifier::BOLD),
                     ));
-                    h.push(Span::raw("Expand   "));
+                    h.push(Span::raw(crate::ui::i18n::t("Expand   ")));
                     h.push(Span::styled(
                         " m ",
                         Style::default().add_modifier(Modifier::BOLD),
                     ));
-                    h.push(Span::raw("Merge   "));
+                    h.push(Span::raw(crate::ui::i18n::t("Merge   ")));
                     if group.sources.len() > 1 {
                         h.push(Span::styled(
                             " s ",
                             Style::default().add_modifier(Modifier::BOLD),
                         ));
-                        h.push(Span::raw("Split all   "));
+                        h.push(Span::raw(crate::ui::i18n::t("Split all   ")));
                     }
                     if group.override_info.is_some() {
                         h.push(Span::styled(
                             " r ",
                             Style::default().add_modifier(Modifier::BOLD),
                         ));
-                        h.push(Span::raw("Reset   "));
+                        h.push(Span::raw(crate::ui::i18n::t("Reset   ")));
                     }
                     let key = group.root_key();
                     let star_label = if overrides.is_starred(&key) {
-                        "Unstar"
+                        crate::ui::i18n::t("Unstar")
                     } else {
-                        "Star"
+                        crate::ui::i18n::t("Star")
                     };
                     let vis_label = if overrides.is_hidden(&key) {
-                        "Show"
+                        crate::ui::i18n::t("Show")
                     } else {
-                        "Hide"
+                        crate::ui::i18n::t("Hide")
                     };
                     h.push(Span::styled(
                         " f ",
                         Style::default().add_modifier(Modifier::BOLD),
                     ));
-                    h.push(Span::raw(format!("{star_label}   ")));
+                    h.push(Span::raw(format!("{}   ", star_label)));
                     h.push(Span::styled(
                         " v ",
                         Style::default().add_modifier(Modifier::BOLD),
                     ));
-                    h.push(Span::raw(format!("{vis_label}   ")));
+                    h.push(Span::raw(format!("{}   ", vis_label)));
                     h.push(Span::styled(
                         " n ",
                         Style::default().add_modifier(Modifier::BOLD),
                     ));
-                    h.push(Span::raw("Rename   "));
+                    h.push(Span::raw(crate::ui::i18n::t("Rename   ")));
                 }
                 Some(&RowKind::Source(gi, _)) if gi < groups.len() => {
                     if groups[gi].sources.len() > 1 {
@@ -1176,7 +1176,7 @@ impl SettingsState {
                             " s ",
                             Style::default().add_modifier(Modifier::BOLD),
                         ));
-                        h.push(Span::raw("Extract   "));
+                        h.push(Span::raw(crate::ui::i18n::t("Extract   ")));
                     }
                 }
                 _ => {}
@@ -1186,17 +1186,17 @@ impl SettingsState {
                 " / ",
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-            h.push(Span::raw("Search   "));
+            h.push(Span::raw(crate::ui::i18n::t("Search   ")));
             h.push(Span::styled(
                 " R ",
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-            h.push(Span::raw("Reset all   "));
+            h.push(Span::raw(crate::ui::i18n::t("Reset all   ")));
             h.push(Span::styled(
                 " . ",
                 Style::default().add_modifier(Modifier::BOLD),
             ));
-            h.push(Span::raw("Back"));
+            h.push(Span::raw(crate::ui::i18n::t("Back")));
             h
         };
 
