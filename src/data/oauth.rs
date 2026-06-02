@@ -388,7 +388,23 @@ pub fn discover_credentials_with_usage(source_roots: &[PathBuf]) -> Vec<OAuthCre
             cred.usage = result.usage;
         }
     });
-    if let Some(codex) = codex_credential() {
+    with_codex_credential(creds, codex_credential())
+}
+
+/// Append the synthetic Codex credential to a discovered credential list,
+/// unless one is already present (idempotent). Used by BOTH startup
+/// (`discover_credentials_with_usage`) and the periodic discovery refresh
+/// (`spawn_discovery`) so the Codex rate-tracking card never disappears: the
+/// refresh path's `discover_credentials` only finds OAuth (Claude) tokens, so
+/// without this the wholesale `oauth_credentials` replacement dropped Codex
+/// every ~5 minutes.
+pub fn with_codex_credential(
+    mut creds: Vec<OAuthCredential>,
+    codex: Option<OAuthCredential>,
+) -> Vec<OAuthCredential> {
+    if let Some(codex) = codex
+        && !creds.iter().any(|c| c.is_codex())
+    {
         creds.push(codex);
     }
     creds
@@ -398,7 +414,7 @@ pub fn discover_credentials_with_usage(source_roots: &[PathBuf]) -> Vec<OAuthCre
 /// rate-limit snapshot, so Codex's 5h / 7d windows show in the rate-tracking
 /// view alongside Claude. It has no OAuth token (never polled over HTTP); the
 /// usage is read straight from `~/.codex` session files.
-fn codex_credential() -> Option<OAuthCredential> {
+pub fn codex_credential() -> Option<OAuthCredential> {
     let rl = crate::data::codex::rate::latest_codex_rate_limits()?;
     let to_rfc = |ts: Option<i64>| -> Option<String> {
         ts.and_then(|t| chrono::DateTime::from_timestamp(t, 0))
@@ -594,6 +610,29 @@ mod tests {
         assert!(!creds[0].is_expired());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn with_codex_credential_appends_when_absent_and_dedups() {
+        let codex = OAuthCredential {
+            source_root: PathBuf::from(crate::data::codex::CODEX_ROOT),
+            subscription_type: None,
+            rate_limit_tier: None,
+            expires_at: None,
+            access_token: None,
+            usage: None,
+            stats: UsageStats::default(),
+        };
+        // Absent in the discovered list → appended (the refresh-path bug: the
+        // synthetic Codex credential was dropped every discovery refresh).
+        let out = with_codex_credential(Vec::new(), Some(codex.clone()));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_codex());
+        // Already present → no duplicate.
+        let out2 = with_codex_credential(vec![codex.clone()], Some(codex.clone()));
+        assert_eq!(out2.iter().filter(|c| c.is_codex()).count(), 1);
+        // No codex snapshot available → list unchanged.
+        assert!(with_codex_credential(Vec::new(), None).is_empty());
     }
 
     #[test]

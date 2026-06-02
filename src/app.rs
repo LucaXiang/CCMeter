@@ -1015,7 +1015,14 @@ fn spawn_discovery(tx: &mpsc::Sender<DiscoveryResult>) {
         let (raw_groups, root_cwd_map, session_map) =
             discovery::discover_project_groups_unified();
         let root_paths = sorted_root_paths(&root_cwd_map);
-        let fresh_credentials = crate::data::oauth::discover_credentials(&root_paths);
+        // Mirror the startup path (discover_credentials_with_usage): the
+        // refresh-path discover_credentials only finds Claude OAuth tokens, so
+        // re-attach the synthetic Codex credential or it gets dropped on every
+        // discovery refresh (~5 min) and Codex rate-tracking vanishes.
+        let fresh_credentials = crate::data::oauth::with_codex_credential(
+            crate::data::oauth::discover_credentials(&root_paths),
+            crate::data::oauth::codex_credential(),
+        );
         let _ = tx.send(DiscoveryResult {
             raw_groups,
             root_cwd_map,
