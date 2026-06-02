@@ -1,3 +1,6 @@
 /target
 .DS_Store
 **/.DS_Store
+
+# Session handoff docs (local, transient — never committed)
+.handoffs/
