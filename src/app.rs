@@ -190,7 +190,7 @@ impl App {
 
     pub(crate) fn new() -> Self {
         let (raw_groups, root_cwd_map, session_map) =
-            discovery::discover_project_groups_with_root_map();
+            discovery::discover_project_groups_unified();
         let raw_groups = Arc::new(raw_groups);
         let session_map = Arc::new(session_map);
         let (merged_cache, index, mut cache_load_state) = load_data(&raw_groups, &session_map);
@@ -1047,7 +1047,7 @@ fn spawn_discovery(tx: &mpsc::Sender<DiscoveryResult>) {
     let tx = tx.clone();
     std::thread::spawn(move || {
         let (raw_groups, root_cwd_map, session_map) =
-            discovery::discover_project_groups_with_root_map();
+            discovery::discover_project_groups_unified();
         let root_paths = sorted_root_paths(&root_cwd_map);
         let fresh_credentials = crate::data::oauth::discover_credentials(&root_paths);
         let _ = tx.send(DiscoveryResult {
