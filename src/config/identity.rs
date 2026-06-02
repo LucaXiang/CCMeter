@@ -2,6 +2,83 @@
 //! normalize remote URLs, collapse worktree paths, and persist resolved
 //! identities so deleted worktrees still group correctly.
 
+use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+
+/// One resolved identity for a cwd. `canonical_root` is the shortest repo
+/// root path so it stays compatible with overrides keyed by root_path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedIdentity {
+    pub remote_url: Option<String>, // normalized; None when no git remote
+    pub canonical_root: String,
+    pub source: IdentitySource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum IdentitySource { LiveGit, CodexSeed, PathFallback }
+
+/// In-memory sidecar: cwd -> identity, plus its own schema version on disk.
+#[derive(Debug, Default)]
+pub struct IdentityStore {
+    map: HashMap<String, ResolvedIdentity>,
+    dirty: bool,
+}
+
+const IDENTITY_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct VersionedStore { schema_version: u32, data: HashMap<String, ResolvedIdentity> }
+
+impl IdentityStore {
+    pub fn get(&self, cwd: &str) -> Option<&ResolvedIdentity> { self.map.get(cwd) }
+
+    pub fn insert(&mut self, cwd: String, id: ResolvedIdentity) {
+        if self.map.get(&cwd) != Some(&id) {
+            self.map.insert(cwd, id);
+            self.dirty = true;
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(&VersionedStore {
+            schema_version: IDENTITY_SCHEMA_VERSION,
+            data: self.map.clone(),
+        })
+        .unwrap_or_else(|_| "{}".into())
+    }
+
+    pub fn from_json(raw: &str) -> Option<Self> {
+        let v: VersionedStore = serde_json::from_str(raw).ok()?;
+        if v.schema_version != IDENTITY_SCHEMA_VERSION {
+            return None;
+        }
+        Some(Self { map: v.data, dirty: false })
+    }
+
+    fn path() -> std::path::PathBuf {
+        dirs::home_dir().unwrap_or_default()
+            .join(".config").join("ccmeter").join("identities.json")
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::path())
+            .ok()
+            .and_then(|raw| Self::from_json(&raw))
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        if !self.dirty { return; }
+        let path = Self::path();
+        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        let tmp = path.with_extension("json.tmp");
+        let json = self.to_json();
+        if std::fs::write(&tmp, &json).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::write(&path, &json);
+        }
+    }
+}
+
 /// Canonicalize a git remote URL so `git@host:org/repo.git` and
 /// `https://host/org/repo[.git]` collapse to one key: `host/org/repo`,
 /// lowercased, no scheme/credentials, no trailing `.git`.
@@ -76,5 +153,32 @@ mod tests {
             normalize_remote_url("git@github.com:LucaXiang/Crab.git"),
             normalize_remote_url("git@github.com:LucaXiang/crab-red-coral.git"),
         );
+    }
+
+    #[test]
+    fn store_roundtrips_through_json() {
+        let mut store = IdentityStore::default();
+        store.insert(
+            "/Users/xzy/workspace/crab/.claude/worktrees/x".into(),
+            ResolvedIdentity {
+                remote_url: Some("github.com/lucaxiang/crab".into()),
+                canonical_root: "/Users/xzy/workspace/crab".into(),
+                source: IdentitySource::CodexSeed,
+            },
+        );
+        let json = store.to_json();
+        let back = IdentityStore::from_json(&json).expect("valid");
+        assert_eq!(
+            back.get("/Users/xzy/workspace/crab/.claude/worktrees/x").unwrap().canonical_root,
+            "/Users/xzy/workspace/crab"
+        );
+    }
+
+    #[test]
+    fn from_json_rejects_wrong_schema_version() {
+        // A sidecar from a future/old schema must be ignored (treated as empty),
+        // never silently trusted.
+        let bad = r#"{"schema_version":999,"data":{}}"#;
+        assert!(IdentityStore::from_json(bad).is_none());
     }
 }
