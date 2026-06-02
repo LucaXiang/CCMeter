@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, NaiveDate, Timelike};
 use serde::Deserialize;
 
 use super::CodexDelta;
@@ -127,12 +127,19 @@ pub(crate) fn parse_codex_str(raw: &str, _session_file: &str) -> Vec<CodexDelta>
                 let Ok(parsed) = DateTime::parse_from_rfc3339(ts) else {
                     continue;
                 };
-                let date: NaiveDate = parsed.with_timezone(&chrono::Local).date_naive();
+                let local = parsed.with_timezone(&chrono::Local);
+                let date: NaiveDate = local.date_naive();
+                let minute = local.hour() as u16 * 60 + local.minute() as u16;
                 out.push(CodexDelta {
                     cwd: cwd.clone(),
                     date,
+                    minute,
                     model: model.clone(),
-                    input: delta.input_tokens,
+                    // Codex reports cache-inclusive input (cached ⊆ input);
+                    // store the fresh, cache-exclusive portion so `input`
+                    // matches Claude's already-fresh API input_tokens and the
+                    // combined view isn't inflated by re-read cache each turn.
+                    input: delta.input_tokens.saturating_sub(delta.cached_input_tokens),
                     cache_read: delta.cached_input_tokens,
                     output: delta.output_tokens,
                 });
@@ -151,35 +158,65 @@ mod tests {
 
     #[test]
     fn deltaizes_cumulative_usage_and_tracks_model_and_cwd() {
+        // Codex's `input_tokens` is cache-INCLUSIVE (OpenAI convention:
+        // total_tokens == input_tokens + output_tokens, cached ⊆ input). We
+        // store the fresh, cache-exclusive portion so `input` means the same
+        // thing as for Claude (whose API input_tokens is already fresh).
+        // E1: input 110 (incl 100 cached) → fresh 10; E2 cumulative input 230
+        // (incl 200 cached) → delta fresh 20. Totals: fresh 30, cache 200.
         let raw = lines(&[
             r#"{"type":"session_meta","timestamp":"2026-05-04T10:00:00.000Z","payload":{"cwd":"/proj"}}"#,
             r#"{"type":"turn_context","timestamp":"2026-05-04T10:00:01.000Z","payload":{"model":"gpt-5.5"}}"#,
-            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":100,"output_tokens":5,"reasoning_output_tokens":5,"total_tokens":120}}}}"#,
-            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":100,"output_tokens":20,"reasoning_output_tokens":10,"total_tokens":160}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":110,"cached_input_tokens":100,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":120}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":230,"cached_input_tokens":200,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":260}}}}"#,
         ]);
         let out = parse_codex_str(&raw, "f.jsonl");
         let total_in: u64 = out.iter().map(|d| d.input).sum();
         let total_cr: u64 = out.iter().map(|d| d.cache_read).sum();
         let total_out: u64 = out.iter().map(|d| d.output).sum();
-        assert_eq!(total_in, 30);
-        assert_eq!(total_cr, 100);
-        assert_eq!(total_out, 20);
+        assert_eq!(total_in, 30, "input must be fresh (cache-exclusive)");
+        assert_eq!(total_cr, 200);
+        assert_eq!(total_out, 30);
         assert!(out.iter().all(|d| d.cwd == "/proj" && d.model == "gpt-5.5"));
     }
 
     #[test]
     fn rollback_uses_last_usage() {
+        // Rollback path must also split fresh from cache. E1 input 100
+        // (incl 40 cached) → fresh 60. E2 rolls back (total 22 < 150) so the
+        // delta is `last_token_usage` input 20 (incl 8 cached) → fresh 12.
         let raw = lines(&[
             r#"{"type":"session_meta","timestamp":"2026-05-04T10:00:00.000Z","payload":{"cwd":"/p"}}"#,
             r#"{"type":"turn_context","timestamp":"2026-05-04T10:00:01.000Z","payload":{"model":"gpt-5.5"}}"#,
-            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}}}}"#,
-            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":7},"last_token_usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":7}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-04T10:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":8,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":22},"last_token_usage":{"input_tokens":20,"cached_input_tokens":8,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":22}}}}"#,
         ]);
         let out = parse_codex_str(&raw, "f.jsonl");
         let total_in: u64 = out.iter().map(|d| d.input).sum();
+        let total_cr: u64 = out.iter().map(|d| d.cache_read).sum();
         let total_out: u64 = out.iter().map(|d| d.output).sum();
-        assert_eq!(total_in, 105);
+        assert_eq!(total_in, 72, "fresh = 60 + 12");
+        assert_eq!(total_cr, 48);
         assert_eq!(total_out, 52);
+    }
+
+    #[test]
+    fn captures_minute_of_day_from_timestamp() {
+        use chrono::Timelike;
+        let ts = "2026-05-04T10:37:00.000Z";
+        let raw = lines(&[
+            r#"{"type":"session_meta","timestamp":"2026-05-04T10:00:00.000Z","payload":{"cwd":"/p"}}"#,
+            r#"{"type":"turn_context","timestamp":"2026-05-04T10:00:01.000Z","payload":{"model":"gpt-5.5"}}"#,
+            &format!(r#"{{"type":"event_msg","timestamp":"{ts}","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":50,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":60}}}}}}}}"#),
+        ]);
+        let out = parse_codex_str(&raw, "f.jsonl");
+        // Compare against the same Local conversion the parser uses so the
+        // assertion is timezone-independent.
+        let dt = DateTime::parse_from_rfc3339(ts)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        let expected = dt.hour() as u16 * 60 + dt.minute() as u16;
+        assert_eq!(out[0].minute, expected);
     }
 
     #[test]

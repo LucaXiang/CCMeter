@@ -418,6 +418,10 @@ impl App {
                 &self.data.minute_tokens,
                 &self.render.minute_model,
             );
+        } else if let Some(breakdown) = &self.render.codex_breakdown {
+            // Codex source view: no cards (Codex has no ProjectGroup), so show
+            // the per-model breakdown (gpt-5.5 / gpt-5.3-codex) instead.
+            cards::render_codex_breakdown(frame, chunks[2], breakdown, range_start, range_end);
         } else {
             cards::render(
                 frame,

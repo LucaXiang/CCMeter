@@ -107,6 +107,17 @@ pub(crate) struct AppConfig {
     pub(crate) sources: Vec<SourceEntry>,
 }
 
+/// Per-model breakdown for the Codex source view, where the cards/detail
+/// machinery doesn't apply (Codex has no ProjectGroup). Built from the model
+/// stats so Codex usage is shown split by specific model (gpt-5.5 /
+/// gpt-5.3-codex) — both as a list and a stacked-by-model cost chart.
+pub(crate) struct CodexBreakdown {
+    /// (model label, tokens, cost) sorted by cost descending.
+    pub(crate) rows: Vec<(String, u64, f64)>,
+    /// model label → sorted daily cost series (for the stacked chart).
+    pub(crate) daily: Vec<(String, Vec<(NaiveDate, f64)>)>,
+}
+
 /// Pre-computed values for the current view (rebuilt when filters change).
 pub(crate) struct RenderCache {
     pub(crate) filtered: DailyTokens,
@@ -117,6 +128,8 @@ pub(crate) struct RenderCache {
     /// Maps display position → index in `config.groups`.
     /// Navigation with ←/→ follows this order so it matches the card rendering order.
     pub(crate) display_order: Vec<usize>,
+    /// Present only in the Codex source view; drives the Codex per-model panel.
+    pub(crate) codex_breakdown: Option<CodexBreakdown>,
 }
 
 // ---------------------------------------------------------------------------
@@ -899,6 +912,11 @@ fn build_render_cache(
 
     let range = compute_range(&filtered, time_filter, today_snap);
 
+    // In the Codex source view there are no cards (Codex has no ProjectGroup),
+    // so surface a dedicated per-model breakdown built from the model stats.
+    let codex_breakdown = (index_root == Some(crate::data::codex::CODEX_ROOT))
+        .then(|| build_codex_breakdown(&stats));
+
     RenderCache {
         filtered,
         kpi,
@@ -906,7 +924,48 @@ fn build_render_cache(
         cards,
         range,
         display_order,
+        codex_breakdown,
     }
+}
+
+/// Collect the per-model breakdown for the Codex root from model stats:
+/// (label, tokens, total cost) rows + per-model daily cost series, both
+/// ordered by cost descending so the list, legend and stacked chart agree.
+fn build_codex_breakdown(stats: &crate::data::index::ModelStats) -> CodexBreakdown {
+    use crate::data::codex::CODEX_ROOT;
+
+    let mut labels: Vec<String> = stats
+        .tokens
+        .keys()
+        .filter(|(rk, _)| rk == CODEX_ROOT)
+        .map(|(_, label)| label.clone())
+        .collect();
+    labels.sort();
+    labels.dedup();
+
+    let mut rows: Vec<(String, u64, f64)> = Vec::new();
+    let mut daily: Vec<(String, Vec<(NaiveDate, f64)>)> = Vec::new();
+    for label in labels {
+        let key = (CODEX_ROOT.to_string(), label.clone());
+        let tokens = *stats.tokens.get(&key).unwrap_or(&0);
+        let day_map = stats.daily_costs.get(&key);
+        let cost: f64 = day_map.map(|m| m.values().sum()).unwrap_or(0.0);
+        let mut series: Vec<(NaiveDate, f64)> = day_map
+            .map(|m| m.iter().map(|(&d, &c)| (d, c)).collect())
+            .unwrap_or_default();
+        series.sort_by_key(|&(d, _)| d);
+        rows.push((label.clone(), tokens, cost));
+        if !series.is_empty() {
+            daily.push((label, series));
+        }
+    }
+
+    let by_cost_desc = |a: f64, b: f64| b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal);
+    rows.sort_by(|a, b| by_cost_desc(a.2, b.2));
+    let cost_of = |label: &str| rows.iter().find(|r| r.0 == label).map(|r| r.2).unwrap_or(0.0);
+    daily.sort_by(|a, b| by_cost_desc(cost_of(&a.0), cost_of(&b.0)));
+
+    CodexBreakdown { rows, daily }
 }
 
 fn compute_hit_tokens(hits: &mut [RateLimitHit], index: &EventIndex) {
@@ -941,16 +1000,29 @@ fn load_data(
     let fresh_cache = cache::from_events(&events, session_map);
     let merged = cache::merge(outcome.cache, &fresh_cache);
     // Fold live Codex usage (~/.codex/sessions) under the `codex` root so it
-    // aggregates with Claude in the "All" view and persists. merge() is
-    // high-water-mark per (root, cwd, date); the codex root never collides
-    // with Claude/backfill roots, so totals in "All" are additive, not double
-    // counted. This runs off the UI thread (load_data is always called from a
-    // background loader/reload thread), so the extra parse is not user-facing.
-    let (codex_cache, _codex_cwds) = crate::data::codex::load_codex_cache();
+    // aggregates with Claude in the "All" view and persists. The codex root
+    // never collides with Claude/backfill roots, so totals in "All" are
+    // additive, not double counted. This runs off the UI thread (load_data is
+    // always called from a background loader/reload thread), so the extra
+    // parse is not user-facing.
+    //
+    // Codex sessions are immutable historical files, so a re-parse is always
+    // authoritative: drop any persisted codex root first so the fresh parse
+    // REPLACES it rather than being high-water-marked against it. Otherwise
+    // stale values (e.g. the pre-fresh-input cache-inclusive counts) would win
+    // the max-merge and the corrected, lower counts would never take effect.
+    let codex_deltas = crate::data::codex::collect_codex_deltas();
+    let (codex_cache, _codex_cwds) = crate::data::codex::aggregate(&codex_deltas);
+    let mut merged = merged;
+    merged.remove_root(crate::data::codex::CODEX_ROOT);
     let merged = cache::merge(merged, &codex_cache);
     cache::save(&merged);
 
-    let index = EventIndex::build(&events, session_map);
+    // Also fold the same Codex deltas into the event index so Codex usage
+    // appears in per-model breakdowns (rate tracking + dashboard), split by
+    // specific model (gpt-5.5 / gpt-5.3-codex).
+    let mut index = EventIndex::build(&events, session_map);
+    index.fold_codex(&codex_deltas);
     (merged, index, outcome.state)
 }
 
