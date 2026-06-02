@@ -72,27 +72,27 @@ pub(super) fn render_kpi_bar(
         let local_ts = hit.timestamp.with_timezone(&chrono::Local);
         let days_ago = (chrono::Local::now().date_naive() - local_ts.date_naive()).num_days();
         if days_ago <= 0 {
-            "today".to_string()
+            crate::ui::i18n::t("today").to_string()
         } else if days_ago == 1 {
-            "1d ago".to_string()
+            crate::ui::i18n::t("1d ago").to_string()
         } else {
             format!("{}d ago", days_ago)
         }
     } else {
-        "never".to_string()
+        crate::ui::i18n::t("never").to_string()
     };
-    let last_hit_color = if last_hit_str == "never" {
+    let last_hit_color = if last_hit_str == crate::ui::i18n::t("never") {
         t.lines_positive
-    } else if last_hit_str == "today" {
+    } else if last_hit_str == crate::ui::i18n::t("today") {
         t.error
     } else {
         t.warning
     };
 
-    let values: [(&str, &str, Color); 3] = [
-        (&avg_str, " Avg max $/session ", t.tokens_in),
-        (&trend_str, " Trend ", trend_color),
-        (&last_hit_str, " Last hit ", last_hit_color),
+    let values: [(&str, &'static str, Color); 3] = [
+        (&avg_str, crate::ui::i18n::t(" Avg max $/session "), t.tokens_in),
+        (&trend_str, crate::ui::i18n::t(" Trend "), trend_color),
+        (&last_hit_str, crate::ui::i18n::t(" Last hit "), last_hit_color),
     ];
 
     let col_constraints: Vec<Constraint> = (0..3).map(|_| Constraint::Ratio(1, 3)).collect();

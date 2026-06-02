@@ -153,11 +153,15 @@ pub(crate) fn render(
 fn render_footer(frame: &mut Frame, area: Rect, reloading: bool) {
     let t = theme();
     if reloading {
-        let footer = Paragraph::new(Span::styled("⟳ Reloading…", Style::default().fg(t.warning)))
-            .alignment(Alignment::Center);
+        let footer = Paragraph::new(Span::styled(
+            crate::ui::i18n::t("⟳ Reloading…"),
+            Style::default().fg(t.warning),
+        ))
+        .alignment(Alignment::Center);
         frame.render_widget(footer, area);
     } else {
-        let text = "←→ Select source   r Refresh   t Dashboard   q Quit";
+        let text =
+            crate::ui::i18n::t("←→ Select source   r Refresh   t Dashboard   q Quit");
         let footer = Paragraph::new(Span::styled(text, Style::default().fg(t.text_dim)))
             .alignment(Alignment::Center);
         frame.render_widget(footer, area);

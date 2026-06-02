@@ -73,22 +73,28 @@ pub(super) fn render_session_chart(frame: &mut Frame, area: Rect, bars: &[DayBar
 
     let title = Line::from(vec![
         Span::styled(
-            " Daily session cost ",
+            crate::ui::i18n::t(" Daily session cost "),
             Style::default()
                 .fg(t.heatmap_title)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("██", Style::default().fg(violet)),
-        Span::styled(" history ", Style::default().fg(t.text_dim)),
+        Span::styled(crate::ui::i18n::t(" history "), Style::default().fg(t.text_dim)),
         Span::styled("██", Style::default().fg(red)),
-        Span::styled(" hit day ", Style::default().fg(t.text_dim)),
+        Span::styled(crate::ui::i18n::t(" hit day "), Style::default().fg(t.text_dim)),
         Span::styled("██", Style::default().fg(blue)),
-        Span::styled(" projected live ", Style::default().fg(t.text_dim)),
+        Span::styled(
+            crate::ui::i18n::t(" projected live "),
+            Style::default().fg(t.text_dim),
+        ),
         Span::styled("│ ", Style::default().fg(t.border)),
         Span::styled("█", Style::default().fg(violet_light)),
         Span::styled("█", Style::default().fg(violet_mid)),
         Span::styled("█", Style::default().fg(violet)),
-        Span::styled(" cache/in/out ", Style::default().fg(t.text_dim)),
+        Span::styled(
+            crate::ui::i18n::t(" cache/in/out "),
+            Style::default().fg(t.text_dim),
+        ),
     ]);
 
     let block = Block::default()
@@ -102,7 +108,10 @@ pub(super) fn render_session_chart(frame: &mut Frame, area: Rect, bars: &[DayBar
 
     if bars.is_empty() || inner.height < 4 || inner.width < 4 {
         if inner.height >= 1 && inner.width >= 4 {
-            let msg = Paragraph::new(Span::styled("no data", Style::default().fg(t.text_dim)));
+            let msg = Paragraph::new(Span::styled(
+                crate::ui::i18n::t("no data"),
+                Style::default().fg(t.text_dim),
+            ));
             frame.render_widget(msg, inner);
         }
         return;

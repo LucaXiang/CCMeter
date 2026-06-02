@@ -18,7 +18,7 @@ pub(super) fn render_session_forecast(
 ) {
     let t = theme();
     let title = Line::from(vec![Span::styled(
-        " Session pacing ",
+        crate::ui::i18n::t(" Session pacing "),
         Style::default()
             .fg(t.heatmap_title)
             .add_modifier(Modifier::BOLD),
@@ -44,7 +44,12 @@ pub(super) fn render_session_forecast(
         let msg = Paragraph::new(Span::styled(
             selected_cred
                 .map(credential_status_message)
-                .unwrap_or_else(|| "Select a source to inspect its current session.".to_string()),
+                .unwrap_or_else(|| {
+                    crate::ui::i18n::t(
+                        "Select a source to inspect its current session.",
+                    )
+                    .to_string()
+                }),
             Style::default().fg(status_color),
         ));
         frame.render_widget(msg, inner);
@@ -93,7 +98,10 @@ pub(super) fn render_session_forecast(
     if marker_col > 0 {
         marker_spans.push(Span::raw(" ".repeat(marker_col)));
     }
-    marker_spans.push(Span::styled("^now", Style::default().fg(t.text_secondary)));
+    marker_spans.push(Span::styled(
+        crate::ui::i18n::t("^now"),
+        Style::default().fg(t.text_secondary),
+    ));
     frame.render_widget(
         Paragraph::new(Line::from(marker_spans)),
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
@@ -104,13 +112,22 @@ pub(super) fn render_session_forecast(
             let eta = snapshot
                 .limit_time_local
                 .map(|ts| ts.format("%H:%M").to_string())
-                .unwrap_or_else(|| "soon".to_string());
-            format!("hit in {} ({})", format_duration_label(mins), eta)
+                .unwrap_or_else(|| crate::ui::i18n::t("soon").to_string());
+            format!(
+                "{}{} ({})",
+                crate::ui::i18n::t("hit in "),
+                format_duration_label(mins),
+                eta,
+            )
         } else {
-            format!("~{:.0}% at reset", snapshot.projected_pct_at_reset)
+            format!(
+                "~{:.0}{}",
+                snapshot.projected_pct_at_reset,
+                crate::ui::i18n::t("% at reset"),
+            )
         }
     } else {
-        "no forecast yet".to_string()
+        crate::ui::i18n::t("no forecast yet").to_string()
     };
 
     let status_line = Line::from(vec![
@@ -126,8 +143,10 @@ pub(super) fn render_session_forecast(
         Span::styled("  |  ", Style::default().fg(t.text_dim)),
         Span::styled(
             format!(
-                "current {} | safe {}",
+                "{}{} | {}{}",
+                crate::ui::i18n::t("current "),
                 format_rate_label(snapshot.rate_per_min),
+                crate::ui::i18n::t("safe "),
                 format_rate_label(snapshot.safe_rate_per_min),
             ),
             Style::default().fg(t.text_secondary),

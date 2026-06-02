@@ -16,10 +16,10 @@ pub(super) enum PaceStatus {
 impl PaceStatus {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Steady => "Steady",
-            Self::Watch => "Watch",
-            Self::SlowDown => "Slow down",
-            Self::Critical => "Critical",
+            Self::Steady => crate::ui::i18n::t("Steady"),
+            Self::Watch => crate::ui::i18n::t("Watch"),
+            Self::SlowDown => crate::ui::i18n::t("Slow down"),
+            Self::Critical => crate::ui::i18n::t("Critical"),
         }
     }
 

@@ -18,7 +18,7 @@ pub(super) fn render_usage_timeline(
     let dot_color = t.tokens_in;
 
     let title = Line::from(vec![Span::styled(
-        " Session token pace ",
+        crate::ui::i18n::t(" Session token pace "),
         Style::default()
             .fg(t.heatmap_title)
             .add_modifier(Modifier::BOLD),
@@ -112,7 +112,7 @@ pub(super) fn render_usage_timeline(
 
     // Scale label (top-right)
     let max_val = buckets.iter().cloned().max().unwrap_or(0).max(1);
-    let scale_label = format!("{}/2m", format_tokens(max_val));
+    let scale_label = format!("{}{}", format_tokens(max_val), crate::ui::i18n::t("/2m"));
     let scale_span = Span::styled(&scale_label, Style::default().fg(t.tokens_in));
     let scale_area = Rect::new(
         inner.x + inner.width.saturating_sub(scale_label.len() as u16),

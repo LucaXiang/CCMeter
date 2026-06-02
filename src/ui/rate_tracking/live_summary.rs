@@ -34,7 +34,7 @@ pub(super) fn render_live_summary(
             Span::raw(" "),
             Span::styled(star, star_style),
             Span::styled(
-                " Live rate status ",
+                crate::ui::i18n::t(" Live rate status "),
                 Style::default()
                     .fg(t.heatmap_title)
                     .add_modifier(Modifier::BOLD),
@@ -49,7 +49,9 @@ pub(super) fn render_live_summary(
 
     let Some(cred) = selected_cred else {
         frame.render_widget(
-            Paragraph::new("Use left/right to choose the OAuth source you want to monitor."),
+            Paragraph::new(crate::ui::i18n::t(
+                "Use left/right to choose the OAuth source you want to monitor.",
+            )),
             inner,
         );
         return;
@@ -105,16 +107,19 @@ pub(super) fn render_live_summary(
     let status_color = snapshot.status.color(t);
     let middle_suffix = if width >= 60 {
         format!(
-            " | 5h {:.0}% | reset {} | elapsed {}",
+            " | 5h {:.0}% | {} {} | {} {}",
             snapshot.utilization_pct,
+            crate::ui::i18n::t("reset"),
             snapshot.session_end_local.format("%H:%M"),
-            format_duration_label(snapshot.elapsed_min)
+            crate::ui::i18n::t("elapsed"),
+            format_duration_label(snapshot.elapsed_min),
         )
     } else if width >= 42 {
         format!(
-            " | {:.0}% | reset {}",
+            " | {:.0}% | {} {}",
             snapshot.utilization_pct,
-            snapshot.session_end_local.format("%H:%M")
+            crate::ui::i18n::t("reset"),
+            snapshot.session_end_local.format("%H:%M"),
         )
     } else {
         format!(" | {:.0}%", snapshot.utilization_pct)
@@ -145,36 +150,51 @@ pub(super) fn render_live_summary(
             let eta = snapshot
                 .limit_time_local
                 .map(|ts| ts.format("%H:%M").to_string())
-                .unwrap_or_else(|| "soon".to_string());
+                .unwrap_or_else(|| crate::ui::i18n::t("soon").to_string());
             format!(
-                "Hit in {} at current pace (around {}).",
+                "{}{} {}{}{}{}",
+                crate::ui::i18n::t("Hit in "),
                 format_duration_label(mins),
-                eta
+                crate::ui::i18n::t("at current pace (around "),
+                eta,
+                crate::ui::i18n::t(")."),
+                "",
             )
         } else {
             format!(
-                "On track for ~{:.0}% at reset.",
-                snapshot.projected_pct_at_reset
+                "{}{:.0}{}",
+                crate::ui::i18n::t("On track for ~"),
+                snapshot.projected_pct_at_reset,
+                crate::ui::i18n::t("% at reset."),
             )
         }
     } else {
-        "No hit forecast yet.".to_string()
+        crate::ui::i18n::t("No hit forecast yet.").to_string()
     };
     let metrics = if width >= 70 {
         format!(
-            "Current {} | Safe {} | Session {}",
+            "{}{} | {}{} | {}{}",
+            crate::ui::i18n::t("Current "),
             format_rate_label(snapshot.rate_per_min),
+            crate::ui::i18n::t("Safe "),
             format_rate_label(snapshot.safe_rate_per_min),
+            crate::ui::i18n::t("Session "),
             format_tokens(snapshot.session_tokens),
         )
     } else if width >= 52 {
         format!(
-            "Current {} | Safe {}",
+            "{}{} | {}{}",
+            crate::ui::i18n::t("Current "),
             format_rate_label(snapshot.rate_per_min),
+            crate::ui::i18n::t("Safe "),
             format_rate_label(snapshot.safe_rate_per_min),
         )
     } else {
-        format!("Current {}", format_rate_label(snapshot.rate_per_min))
+        format!(
+            "{}{}",
+            crate::ui::i18n::t("Current "),
+            format_rate_label(snapshot.rate_per_min),
+        )
     };
     let bottom = if width >= 58 {
         Line::from(vec![

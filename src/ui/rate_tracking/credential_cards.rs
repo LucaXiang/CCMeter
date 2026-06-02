@@ -51,7 +51,10 @@ pub(super) fn render_credential_cards(
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(t.border))
-            .title(Span::styled(" No OAuth ", Style::default().fg(t.text_dim)));
+            .title(Span::styled(
+                crate::ui::i18n::t(" No OAuth "),
+                Style::default().fg(t.text_dim),
+            ));
         frame.render_widget(block, area);
         return;
     }
@@ -169,8 +172,10 @@ fn spend_title(week_cost: f64, month_cost: f64, cred: &OAuthCredential) -> Vec<S
         return extra_usage_title(usage);
     }
     let t = theme();
+    let cost_str = crate::data::models::format_cost(week_cost);
+    let week_label = format!("{}{}", cost_str, crate::ui::i18n::t(" ·7d "));
     let mut spans = vec![Span::styled(
-        format!(" {} ·7d ", crate::data::models::format_cost(week_cost)),
+        week_label,
         Style::default().fg(t.cost).add_modifier(Modifier::BOLD),
     )];
     if let Some(price) = cred
@@ -180,8 +185,14 @@ fn spend_title(week_cost: f64, month_cost: f64, cred: &OAuthCredential) -> Vec<S
         && price > 0.0
         && month_cost > 0.0
     {
+        let value_label = format!(
+            "{}{:.0}{}",
+            crate::ui::i18n::t("· "),
+            month_cost / price,
+            crate::ui::i18n::t("× value "),
+        );
         spans.push(Span::styled(
-            format!("· {:.0}× value ", month_cost / price),
+            value_label,
             Style::default().fg(t.lines_positive),
         ));
     }
@@ -254,7 +265,8 @@ fn render_compact_usage(frame: &mut Frame, area: Rect, usage: &UsageReport, stat
     // Status line
     let status = Line::from(vec![Span::styled(
         format!(
-            "polled {} ({}req, {}err)",
+            "{}{} ({}req, {}err)",
+            crate::ui::i18n::t("polled "),
             stats.last_fetch_ago(),
             stats.call_count,
             stats.rate_limit_count,

@@ -33,7 +33,7 @@ pub(super) fn render_rate_limits(
                         format!("{}m", m)
                     }
                 }
-                Some(_) => "<1m".to_string(),
+                Some(_) => crate::ui::i18n::t("<1m").to_string(),
                 None => "—".to_string(),
             };
             let (in_c, cache_c, out_c) = per_model_cost_split(&hit.per_model);
@@ -66,11 +66,11 @@ pub(super) fn render_rate_limits(
     let (header, widths) = if show_source {
         (
             Row::new(vec![
-                Cell::from("Date")
+                Cell::from(crate::ui::i18n::t("Date"))
                     .style(Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)),
-                Cell::from("Source")
+                Cell::from(crate::ui::i18n::t("Source"))
                     .style(Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)),
-                Cell::from("Dur")
+                Cell::from(crate::ui::i18n::t("Dur"))
                     .style(Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)),
             ])
             .bottom_margin(1),
@@ -83,11 +83,11 @@ pub(super) fn render_rate_limits(
     } else {
         (
             Row::new(vec![
-                Cell::from("Date")
+                Cell::from(crate::ui::i18n::t("Date"))
                     .style(Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)),
-                Cell::from("Dur")
+                Cell::from(crate::ui::i18n::t("Dur"))
                     .style(Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)),
-                Cell::from("Cost")
+                Cell::from(crate::ui::i18n::t("Cost"))
                     .style(Style::default().fg(t.text_dim).add_modifier(Modifier::BOLD)),
             ])
             .bottom_margin(1),
@@ -107,7 +107,12 @@ pub(super) fn render_rate_limits(
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(Style::default().fg(t.border))
                 .title(Span::styled(
-                    format!(" Recent rate-limit hits ({}) ", hits.len()),
+                    format!(
+                        "{}{}{} ",
+                        crate::ui::i18n::t(" Recent rate-limit hits ("),
+                        hits.len(),
+                        crate::ui::i18n::t(")"),
+                    ),
                     Style::default()
                         .fg(t.heatmap_title)
                         .add_modifier(Modifier::BOLD),
