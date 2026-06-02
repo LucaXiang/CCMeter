@@ -6,14 +6,12 @@ use crate::data::models::{format_cost, per_model_cost_split};
 use crate::data::rate_limits::RateLimitHit;
 use crate::ui::theme::theme;
 
-use super::helpers::{source_color_index, source_display_name};
+use super::helpers::{credential_display_name, source_color_index};
 
 pub(super) fn render_rate_limits(
     frame: &mut Frame,
     area: Rect,
     hits: &[&RateLimitHit],
-    source_names: &[String],
-    source_roots: &[Option<String>],
     credential_roots: &[String],
     show_source: bool,
 ) {
@@ -47,7 +45,7 @@ pub(super) fn render_rate_limits(
             };
 
             if show_source {
-                let name = source_display_name(&hit.source_root, source_names, source_roots);
+                let name = credential_display_name(&hit.source_root);
                 let color_idx = source_color_index(&hit.source_root, credential_roots);
                 let color = t.rainbow[color_idx % t.rainbow.len()];
                 Row::new(vec![

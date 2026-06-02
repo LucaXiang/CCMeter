@@ -17,6 +17,7 @@ pub enum RootFilter {
     /// Every root.
     All,
     /// Every root except this one (used for "Claude Code" = all-but-codex).
+    // Currently only CODEX_ROOT; if multiple provider roots appear, switch to a set.
     Exclude(String),
     /// Only this exact root (used for "Codex", or a single Claude install dir).
     Only(String),

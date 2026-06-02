@@ -1020,6 +1020,7 @@ fn compute_range(
     }
 }
 
+// root_map holds only Claude install roots; the codex root is injected into merged_cache by load_data and is never in root_map, so the has_codex branch is checked first.
 fn build_source_list(
     root_map: &HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
     has_codex: bool,

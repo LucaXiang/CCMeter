@@ -31,13 +31,10 @@ use session_chart::render_session_chart;
 use session_forecast::render_session_forecast;
 use usage_timeline::render_usage_timeline;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     frame: &mut Frame,
     area: Rect,
     hits: &[RateLimitHit],
-    source_names: &[String],
-    source_roots: &[Option<String>],
     credentials: &[OAuthCredential],
     selected: Option<usize>,
     index: &EventIndex,
@@ -81,22 +78,12 @@ pub(crate) fn render(
     let selected_minute_tokens = index.build_minute_tokens(selected_root.as_deref(), None);
     let forecast = build_forecast_snapshot(selected_cred, &selected_minute_tokens);
 
-    render_live_summary(
-        frame,
-        outer[0],
-        selected_cred,
-        source_names,
-        source_roots,
-        forecast.as_ref(),
-        tick,
-    );
+    render_live_summary(frame, outer[0], selected_cred, forecast.as_ref(), tick);
 
     render_rate_limits(
         frame,
         columns[0],
         &filtered_hits,
-        source_names,
-        source_roots,
         &credential_roots,
         selected_root.is_none(),
     );
@@ -112,15 +99,7 @@ pub(crate) fn render(
         ])
         .split(columns[1]);
 
-    render_credential_cards(
-        frame,
-        right_rows[0],
-        credentials,
-        source_names,
-        source_roots,
-        selected,
-        &credential_roots,
-    );
+    render_credential_cards(frame, right_rows[0], credentials, selected, &credential_roots);
 
     let bars = compute_session_bars(
         &filtered_hits,
