@@ -1,8 +1,9 @@
 # CCMeter 接力文档 — 统一项目卡(Claude + Codex)
 
-**当前 HEAD**: `c3c2e18` (已 merge 进 `main` 并 push 到 `fork` = git@github.com:LucaXiang/CCMeter.git)
+**当前 HEAD**: `ac2ac37` (已 merge 进 `main` 并 push 到 `fork` = git@github.com:LucaXiang/CCMeter.git)
 **SPEC**: `docs/superpowers/specs/2026-06-02-unified-project-cards-design.md`
-**计划**: `docs/superpowers/plans/2026-06-02-unified-project-cards-phase1.md`
+**计划**: `docs/superpowers/plans/2026-06-02-unified-project-cards-phase{1,2,3}.md`
+**状态**: 统一项目卡功能(Phase 1–3)**全部完成**。仅剩 #4 生产力面板(独立特性)。
 
 ## 已完成 — Phase 1：统一分组 + 管线
 
@@ -21,20 +22,25 @@
 
 计划 `docs/superpowers/plans/2026-06-02-unified-project-cards-phase2.md`。`ProjectCard` 加 `cost_claude/cost_codex`,`build_cards` 循环按 `root == CODEX_ROOT` 拆(两者和 = total_cost);`render_card` line 1 成本后渲染 ` cc $X · cx $Y`(仅 mixed 卡显示,宽度守卫,padding 两处已补 `split_str.len()`)。`ProjectSource.provider` 的 `#[allow(dead_code)]` 仍在(Phase 2 读的是 cache root,不是该字段;Phase 3 若需要再用)。
 
+## 已完成 — Phase 3：Recent sessions(含标题)
+
+计划 `docs/superpowers/plans/2026-06-02-unified-project-cards-phase3.md`。
+- `src/data/sessions.rs`(新):`SessionSummary{title,provider,cwd,tokens,cost,last_date}`、`claude_session_summaries`(从 events 按 session_file 聚合)、`scan_ai_titles`(扫 `{"type":"ai-title","aiTitle":..}`)、`fit_cols`(CJK 显示宽度截断,中文标题 2 列对齐)。
+- `CodexDelta` 加 `session_id`(`parse_codex_str` 从 `session_meta.payload.id` 盖章);`codex/sessions.rs` 加 `read_thread_names`(读 `session_index.jsonl`)+ `codex_session_summaries`(cost 口径同 cache/index)。
+- `app.rs`:`load_data` 算全量 sessions 存 `AppData.sessions`(`ReloadResult` 同步带上);`build_render_cache` 按选中项目 `project_cwds`+日期过滤 → `RenderCache.detail_sessions`。
+- `render_detail` 切出底部块 `render_recent_sessions`(高度守卫,charts 保 ≥4 行)列 `CC/CX · 标题 · tokens · 成本 · 日期`,按 last_date 倒序。
+- 真机验证:crab 420 个 Codex 会话,248 个解析出真实中文 `thread_name`;Claude 283/300 文件有 `ai-title`。
+
 ## 待做
 
-### Phase 3：Recent sessions(含标题)= 原 #1 泛化到两端
-- Codex:`CodexDelta` 加 `session_id`,按 session 聚合 tokens/cost/last_date;`thread_name` 取 `~/.codex/session_index.jsonl`。
-- Claude:按 session 文件聚合;标题取会话 JSONL 的 `ai-title`(`{"type":"ai-title","aiTitle":..}`),回退首条 prompt / cwd basename。
-- 经 cwd→group 归到卡;卡片**明细视图**列 `标题·tokens·成本·日期·来源(CC/CX)`,按最近活动倒序。
-
 ### #4 工具/Git 生产力面板(独立,见 CLAUDE.md 末)
+新解析器统计每会话/每日 tool calls(exec_command/apply_patch/write_stdin)、失败、git commits、+/- 行;新面板或 KPI。注意性能(archived_sessions 体量大)。
 
 ## 必跑 (验证 gate)
 ```bash
 cd /Users/xzy/workspace/CCMeter
 cargo +1.95.0 build --bin ccmeter 2>&1 | rg -i 'error|warning:'   # 期望: 空(0 warning)
-cargo +1.95.0 test 2>&1 | rg 'test result'                       # 95 passed; 2 failed(见踩坑)
+cargo +1.95.0 test 2>&1 | rg 'test result'                       # 104 passed; 2 failed(见踩坑)
 cargo +1.95.0 clippy --bin ccmeter 2>&1 | rg 'generated'         # 11 warnings(baseline,勿增)
 ```
 
@@ -48,4 +54,4 @@ cargo +1.95.0 clippy --bin ccmeter 2>&1 | rg 'generated'         # 11 warnings(b
 - **push**: `git push fork main`(origin=hmenzagh 上游不可推)。
 
 ## 下一 session 第一句
-> 读 `RESUME.md` 和 spec,实现 Phase 3(Recent sessions 含标题):Codex `CodexDelta` 加 `session_id` 按 session 聚合 + `session_index.jsonl` 取 `thread_name`;Claude 按 session 文件聚合 + `ai-title` 标题;经 cwd→group 归卡,卡片明细视图列 `标题·tokens·成本·日期·来源(CC/CX)`。先写 Phase 3 计划(writing-plans)再子代理 TDD 执行,`cargo +1.95.0`,完成后原子替换二进制并 `git push fork main`。
+> 统一项目卡(Phase 1–3)已完成。若做 #4 生产力面板:新 `src/data/codex/activity.rs` 遍历 codex 会话统计 `payload.type=="function_call"`(name=工具名 exec_command/apply_patch/write_stdin)、失败、git commits、+/- 行(git 信息可能在 exec 输出里,先 `rtk proxy rg '"function_call"' <一个session> | head` 看结构);只扫 `sessions/` 或加缓存(archived 体量大)。先 writing-plans 再子代理 TDD,`cargo +1.95.0`,完成后原子替换二进制并 `git push fork main`。
