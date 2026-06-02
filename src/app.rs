@@ -64,7 +64,7 @@ impl CachedKpi {
     }
 }
 
-type ReloadResult = (cache::Cache, EventIndex);
+type ReloadResult = (cache::Cache, EventIndex, Vec<crate::data::sessions::SessionSummary>);
 
 struct DiscoveryRefresh {
     discovery_changed: bool,
@@ -94,6 +94,7 @@ pub(crate) struct AppData {
     pub(crate) rate_history: RateHistory,
     #[allow(dead_code)]
     pub(crate) hit_history: HitHistory,
+    pub(crate) sessions: Vec<crate::data::sessions::SessionSummary>,
 }
 
 /// Project configuration (discovery results + user overrides).
@@ -116,6 +117,7 @@ pub(crate) struct RenderCache {
     /// Maps display position → index in `config.groups`.
     /// Navigation with ←/→ follows this order so it matches the card rendering order.
     pub(crate) display_order: Vec<usize>,
+    pub(crate) detail_sessions: Vec<crate::data::sessions::SessionSummary>,
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +182,7 @@ impl App {
             discovery::discover_project_groups_unified();
         let raw_groups = Arc::new(raw_groups);
         let session_map = Arc::new(session_map);
-        let (merged_cache, index, mut cache_load_state) = load_data(&raw_groups, &session_map);
+        let (merged_cache, index, sessions, mut cache_load_state) = load_data(&raw_groups, &session_map);
         // Debug escape hatch for screenshotting the banners after a
         // migration already happened. Set CCMETER_FORCE_BANNER=recovered
         // for the corruption banner, anything else for the migration one.
@@ -236,6 +238,7 @@ impl App {
             &sources[source_index].roots,
             cwds_filter.as_deref(),
             time_filter,
+            &sessions,
         );
 
         let (reload_tx, reload_rx) = mpsc::channel::<ReloadResult>();
@@ -254,6 +257,7 @@ impl App {
                 oauth_credentials,
                 rate_history,
                 hit_history,
+                sessions,
             },
             config: AppConfig {
                 overrides,
@@ -341,6 +345,7 @@ impl App {
             &entry.roots,
             cwds_filter.as_deref(),
             self.time_filter,
+            &self.data.sessions,
         );
         // When viewing a single project, build_render_cache produces a
         // display_order with only one entry. Preserve the full ordering
@@ -601,10 +606,11 @@ impl App {
         }
 
         if self.reloading
-            && let Ok((c, idx)) = self.reload_rx.try_recv()
+            && let Ok((c, idx, sess)) = self.reload_rx.try_recv()
         {
             self.data.merged_cache = c;
             self.data.index = idx;
+            self.data.sessions = sess;
             self.reloading = false;
             self.recompute_tokens();
             self.refresh_rate_limit_hits();
@@ -840,6 +846,7 @@ fn build_render_cache(
     roots: &cache::RootFilter,
     project_cwds: Option<&[String]>,
     time_filter: TimeFilter,
+    sessions: &[crate::data::sessions::SessionSummary],
 ) -> RenderCache {
     let today_snap = Local::now().date_naive();
     let subday = time_filter.subday_start();
@@ -897,6 +904,19 @@ fn build_render_cache(
 
     let range = compute_range(&filtered, time_filter, today_snap);
 
+    let detail_sessions = match project_cwds {
+        Some(cwds) => {
+            let mut v: Vec<_> = sessions
+                .iter()
+                .filter(|s| cwds.contains(&s.cwd) && date_filter(s.last_date))
+                .cloned()
+                .collect();
+            v.sort_by(|a, b| b.last_date.cmp(&a.last_date).then(b.cost.total_cmp(&a.cost)));
+            v
+        }
+        None => Vec::new(),
+    };
+
     RenderCache {
         filtered,
         kpi,
@@ -904,6 +924,7 @@ fn build_render_cache(
         cards,
         range,
         display_order,
+        detail_sessions,
     }
 }
 
@@ -927,7 +948,7 @@ fn compute_hit_tokens(hits: &mut [RateLimitHit], index: &EventIndex) {
 fn load_data(
     raw_groups: &[discovery::ProjectGroup],
     session_map: &HashMap<String, (String, String)>,
-) -> (cache::Cache, EventIndex, cache::CacheLoad) {
+) -> (cache::Cache, EventIndex, Vec<crate::data::sessions::SessionSummary>, cache::CacheLoad) {
     let all_session_files: Vec<std::path::PathBuf> = raw_groups
         .iter()
         .flat_map(|g| g.sources.iter())
@@ -951,6 +972,15 @@ fn load_data(
     // stale values (e.g. the pre-fresh-input cache-inclusive counts) would win
     // the max-merge and the corrected, lower counts would never take effect.
     let codex_deltas = crate::data::codex::collect_codex_deltas();
+
+    // Compute session summaries from both providers BEFORE codex_deltas is
+    // moved. The existing aggregate/fold_codex calls take &codex_deltas, so
+    // nothing is moved — we simply also borrow here.
+    let ai_titles = crate::data::sessions::scan_ai_titles(&all_session_files);
+    let mut sessions = crate::data::sessions::claude_session_summaries(&events, session_map, &ai_titles);
+    let thread_names = crate::data::codex::sessions::read_thread_names();
+    sessions.extend(crate::data::codex::sessions::codex_session_summaries(&codex_deltas, &thread_names));
+
     let (codex_cache, _codex_cwds) = crate::data::codex::aggregate(&codex_deltas);
     let mut merged = merged;
     merged.remove_root(crate::data::codex::CODEX_ROOT);
@@ -962,7 +992,7 @@ fn load_data(
     // specific model (gpt-5.5 / gpt-5.3-codex).
     let mut index = EventIndex::build(&events, session_map);
     index.fold_codex(&codex_deltas);
-    (merged, index, outcome.state)
+    (merged, index, sessions, outcome.state)
 }
 
 fn spawn_reload(
@@ -974,8 +1004,8 @@ fn spawn_reload(
     let session_map = Arc::clone(session_map);
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let (cache, index, _) = load_data(&raw_groups, &session_map);
-        let _ = tx.send((cache, index));
+        let (cache, index, sessions, _) = load_data(&raw_groups, &session_map);
+        let _ = tx.send((cache, index, sessions));
     });
 }
 
