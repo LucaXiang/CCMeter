@@ -495,10 +495,21 @@ pub(crate) fn group_with_store(
     }
 
     // Adapt to the shared finalizer's map shape (keyed by canonical root path).
-    let groups_map: HashMap<PathBuf, (Option<String>, Vec<ProjectSource>)> = keyed
-        .into_values()
-        .map(|(root, remote_url, sources)| (root, (remote_url, sources)))
-        .collect();
+    // Two distinct canonical keys can resolve to the SAME root path — e.g. a
+    // remote-keyed group (`github.com/org/crab`) and a path-fallback group for a
+    // deleted worktree of the same repo whose stripped root is also `…/crab`.
+    // Merge on root collision (extend sources, keep any known remote) so neither
+    // group is silently dropped (a plain `.collect()` would overwrite one).
+    let mut groups_map: HashMap<PathBuf, (Option<String>, Vec<ProjectSource>)> = HashMap::new();
+    for (root, remote_url, sources) in keyed.into_values() {
+        let entry = groups_map
+            .entry(root)
+            .or_insert_with(|| (remote_url.clone(), Vec::new()));
+        if entry.0.is_none() {
+            entry.0 = remote_url;
+        }
+        entry.1.extend(sources);
+    }
 
     finalize_groups(groups_map)
 }
@@ -622,5 +633,46 @@ mod tests {
         let groups = group_with_store(vec![src("/nonexistent-test/obs", Provider::Codex)], &mut store);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].sources[0].provider, Provider::Codex);
+    }
+
+    #[test]
+    fn remote_keyed_and_path_fallback_same_root_merge_not_dropped() {
+        // Regression: a remote-keyed source and a deleted-worktree path-fallback
+        // source for the SAME repo have DIFFERENT canonical keys (normalized URL
+        // vs root path) but resolve to the same canonical root. They must merge
+        // into one group; a prior `.collect()` adapter silently dropped one.
+        use crate::config::identity::{IdentitySource, IdentityStore, ResolvedIdentity};
+        let mut store = IdentityStore::default();
+        // Live crab checkout: known remote, key = normalized URL.
+        store.insert(
+            "/nonexistent-test/crab".into(),
+            ResolvedIdentity {
+                remote_url: Some("github.com/lucaxiang/crab".into()),
+                canonical_root: "/nonexistent-test/crab".into(),
+                source: IdentitySource::LiveGit,
+            },
+        );
+        // Deleted worktree of the same repo: no remote learned, path-fallback
+        // strips back to the same root → key = the root path string.
+        store.insert(
+            "/nonexistent-test/crab/.claude/worktrees/gone".into(),
+            ResolvedIdentity {
+                remote_url: None,
+                canonical_root: "/nonexistent-test/crab".into(),
+                source: IdentitySource::PathFallback,
+            },
+        );
+        let sources = vec![
+            src("/nonexistent-test/crab", Provider::Claude),
+            src("/nonexistent-test/crab/.claude/worktrees/gone", Provider::Claude),
+        ];
+        let groups = group_with_store(sources, &mut store);
+        assert_eq!(groups.len(), 1, "same-root sources must not be dropped");
+        let g = &groups[0];
+        assert_eq!(g.sources.len(), 2, "both sources retained after merge");
+        let cwds: Vec<&str> = g.sources.iter().filter_map(|s| s.cwd.as_deref()).collect();
+        assert!(cwds.contains(&"/nonexistent-test/crab"));
+        assert!(cwds.contains(&"/nonexistent-test/crab/.claude/worktrees/gone"));
+        assert!(g.remote_url.is_some(), "known remote preserved through merge");
     }
 }
