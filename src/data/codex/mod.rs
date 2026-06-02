@@ -3,6 +3,7 @@
 
 pub mod parser;
 pub mod rate;
+pub mod sessions;
 
 use chrono::NaiveDate;
 
@@ -42,7 +43,7 @@ pub fn collect_codex_deltas() -> Vec<CodexDelta> {
         .collect()
 }
 
-fn discover_session_files() -> Vec<PathBuf> {
+pub(crate) fn discover_session_files() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
