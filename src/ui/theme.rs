@@ -147,7 +147,22 @@ impl Theme {
             "opus" => self.model_opus,
             "sonnet" => self.model_sonnet,
             "haiku" => self.model_haiku,
-            _ => self.model_other,
+            "other" | "" => self.model_other,
+            // Non-Claude providers (e.g. Codex's gpt-5.5 / gpt-5.3-codex) keep
+            // their specific model name; give each a distinct, stable color
+            // from a palette (deterministic by name, distinct from the Claude
+            // family hues above).
+            other => {
+                const PALETTE: [Color; 5] = [
+                    Color::Rgb(240, 150, 60),  // orange
+                    Color::Rgb(230, 95, 115),  // coral
+                    Color::Rgb(150, 205, 70),  // lime
+                    Color::Rgb(95, 205, 215),  // cyan
+                    Color::Rgb(230, 190, 70),  // gold
+                ];
+                let idx = other.bytes().map(|b| b as usize).sum::<usize>() % PALETTE.len();
+                PALETTE[idx]
+            }
         }
     }
 }
