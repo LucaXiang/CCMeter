@@ -37,7 +37,8 @@ pub fn parse_session_meta(raw: &str) -> Option<CodexSessionMeta> {
     None
 }
 
-/// Parse `session_meta` from every `*.jsonl` directly in `dir` (test seam).
+/// Parse `session_meta` from every `*.jsonl` under `dir` (recurses into
+/// subdirectories, like `collect_jsonl`). Test seam for the collector.
 pub(crate) fn collect_session_meta_in(dir: &Path) -> Vec<CodexSessionMeta> {
     let mut files = Vec::new();
     super::collect_jsonl(dir, &mut files);
