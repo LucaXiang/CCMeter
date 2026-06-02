@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, Timelike};
 
+use super::cache::RootFilter;
+use super::codex::CODEX_ROOT;
 use super::models::{OUTPUT_COST_WEIGHT, PerModelUsage, model_breakdown_label};
 use super::parser::Event;
 use super::tokens::MinuteTokens;
@@ -254,18 +256,14 @@ impl EventIndex {
     /// Build MinuteTokens (for intraday heatmap), filtered by root and/or cwds.
     pub fn build_minute_tokens(
         &self,
-        source_root: Option<&str>,
+        roots: &RootFilter,
         project_cwds: Option<&[String]>,
     ) -> MinuteTokens {
-        let root_filter = source_root.and_then(|sr| self.root_intern.get(sr).copied());
-        if source_root.is_some() && root_filter.is_none() {
-            return MinuteTokens::default();
-        }
         let cwd_filter = project_cwds.map(|cwds| self.cwd_set(cwds));
 
         let mut mt = MinuteTokens::default();
         for e in &self.entries {
-            if !self.matches_filter(e, root_filter, cwd_filter.as_ref()) {
+            if !self.entry_passes(e, roots, cwd_filter.as_ref()) {
                 continue;
             }
             let key = (e.date, e.minute);
@@ -287,16 +285,12 @@ impl EventIndex {
     pub fn build_model_stats(
         &self,
         cwd_to_root: &HashMap<String, String>,
-        source_root: Option<&str>,
+        roots: &RootFilter,
         date_filter: &impl Fn(NaiveDate) -> bool,
         project_cwds: Option<&[String]>,
         include_minute: bool,
         subday_start: Option<(NaiveDate, u16)>,
     ) -> ModelStats {
-        let root_filter = source_root.and_then(|sr| self.root_intern.get(sr).copied());
-        if source_root.is_some() && root_filter.is_none() {
-            return ModelStats::default();
-        }
         let cwd_filter = project_cwds.map(|cwds| self.cwd_set(cwds));
 
         // Map cwd_idx → root_key_idx so multiple cwds sharing a root_key
@@ -329,7 +323,7 @@ impl EventIndex {
             HashMap::new();
 
         for e in &self.entries {
-            if !self.matches_filter(e, root_filter, cwd_filter.as_ref()) {
+            if !self.entry_passes(e, roots, cwd_filter.as_ref()) {
                 continue;
             }
             if !date_filter(e.date) {
@@ -342,22 +336,28 @@ impl EventIndex {
             {
                 continue;
             }
-            let rk_idx = match cwd_to_rk.get(&e.cwd_idx) {
-                Some(&idx) => idx,
-                None => {
-                    // No ProjectGroup for this cwd (Codex has none) — group it
-                    // under its own source root so it isn't dropped.
-                    let root = self.roots[e.root_idx as usize].as_str();
-                    match rk_intern.get(root) {
-                        Some(&idx) => idx,
-                        None => {
-                            let idx = rk_strings.len() as u16;
-                            rk_strings.push(root.to_string());
-                            rk_intern.insert(root.to_string(), idx);
-                            idx
-                        }
+            let entry_root = self.roots[e.root_idx as usize].as_str();
+            // Codex shares cwd strings with Claude projects (it runs in the same
+            // directories), so its cwd may resolve to a Claude root_key. Never
+            // fold a provider root into a Claude project group — key it strictly
+            // by its own root so it neither leaks into Claude's breakdown nor
+            // gets dropped from its own.
+            let rk_lookup = if entry_root == CODEX_ROOT {
+                None
+            } else {
+                cwd_to_rk.get(&e.cwd_idx).copied()
+            };
+            let rk_idx = match rk_lookup {
+                Some(idx) => idx,
+                None => match rk_intern.get(entry_root) {
+                    Some(&idx) => idx,
+                    None => {
+                        let idx = rk_strings.len() as u16;
+                        rk_strings.push(entry_root.to_string());
+                        rk_intern.insert(entry_root.to_string(), idx);
+                        idx
                     }
-                }
+                },
             };
 
             let label = model_breakdown_label(&self.models[e.model_idx as usize]);
@@ -701,30 +701,24 @@ impl EventIndex {
             .collect()
     }
 
-    fn matches_filter(
+    /// Whether an entry passes the source-root filter (by its own root, so the
+    /// codex root is honored even though it shares cwds with Claude) and the
+    /// optional cwd filter.
+    fn entry_passes(
         &self,
         entry: &CompactEntry,
-        root_filter: Option<u16>,
+        roots: &RootFilter,
         cwd_filter: Option<&HashSet<u16>>,
     ) -> bool {
-        if let Some(ri) = root_filter
-            && entry.root_idx != ri
-        {
-            return false;
-        }
-        if let Some(cwds) = cwd_filter
-            && !cwds.contains(&entry.cwd_idx)
-        {
-            return false;
-        }
-        true
+        roots.matches(&self.roots[entry.root_idx as usize])
+            && cwd_filter.is_none_or(|cwds| cwds.contains(&entry.cwd_idx))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::codex::{CODEX_ROOT, CodexDelta};
+    use crate::data::codex::CodexDelta;
 
     fn codex(date: NaiveDate, minute: u16, model: &str, input: u64, cache: u64, output: u64) -> CodexDelta {
         CodexDelta { cwd: "/p".into(), date, minute, model: model.into(), input, cache_read: cache, output }
@@ -790,7 +784,7 @@ mod tests {
         let mut cwd_to_root = HashMap::new();
         cwd_to_root.insert("/claude-proj".to_string(), "claude-root".to_string());
 
-        let stats = index.build_model_stats(&cwd_to_root, None, &|_| true, None, false, None);
+        let stats = index.build_model_stats(&cwd_to_root, &RootFilter::All, &|_| true, None, false, None);
 
         // Claude collapses to family.
         assert_eq!(stats.tokens.get(&("claude-root".to_string(), "opus".to_string())), Some(&150));

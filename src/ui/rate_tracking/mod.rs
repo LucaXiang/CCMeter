@@ -75,7 +75,11 @@ pub(crate) fn render(
     let selected_cred = selected
         .filter(|&i| i < credentials.len())
         .map(|i| &credentials[i]);
-    let selected_minute_tokens = index.build_minute_tokens(selected_root.as_deref(), None);
+    let selected_root_filter = match &selected_root {
+        Some(root) => crate::data::cache::RootFilter::Only(root.clone()),
+        None => crate::data::cache::RootFilter::All,
+    };
+    let selected_minute_tokens = index.build_minute_tokens(&selected_root_filter, None);
     let forecast = build_forecast_snapshot(selected_cred, &selected_minute_tokens);
 
     render_live_summary(frame, outer[0], selected_cred, forecast.as_ref(), tick);

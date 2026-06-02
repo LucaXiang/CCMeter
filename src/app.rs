@@ -39,7 +39,6 @@ pub(crate) enum View {
 pub(crate) struct SourceEntry {
     pub(crate) name: String,
     pub(crate) roots: crate::data::cache::RootFilter,
-    pub(crate) index_root: Option<String>,
 }
 
 pub(crate) struct CachedKpi {
@@ -208,7 +207,7 @@ impl App {
 
         let (daily_tokens, thresholds) =
             compute_daily_and_thresholds(&merged_cache, &cache::RootFilter::All, None);
-        let minute_tokens = index.build_minute_tokens(None, None);
+        let minute_tokens = index.build_minute_tokens(&cache::RootFilter::All, None);
 
         let root_paths = sorted_root_paths(&root_cwd_map);
         let mut fresh_hits = crate::data::rate_limits::discover_rate_limit_hits(&root_paths);
@@ -247,7 +246,6 @@ impl App {
             &merged_cache,
             &overrides,
             &sources[source_index].roots,
-            sources[source_index].index_root.as_deref(),
             cwds_filter.as_deref(),
             time_filter,
         );
@@ -337,7 +335,7 @@ impl App {
         self.data.minute_tokens = self
             .data
             .index
-            .build_minute_tokens(entry.index_root.as_deref(), cwds_filter.as_deref());
+            .build_minute_tokens(&entry.roots, cwds_filter.as_deref());
         self.render_dirty = true;
     }
 
@@ -353,7 +351,6 @@ impl App {
             &self.data.merged_cache,
             &self.config.overrides,
             &entry.roots,
-            entry.index_root.as_deref(),
             cwds_filter.as_deref(),
             self.time_filter,
         );
@@ -852,7 +849,6 @@ fn build_render_cache(
     merged_cache: &cache::Cache,
     overrides: &Overrides,
     roots: &cache::RootFilter,
-    index_root: Option<&str>,
     project_cwds: Option<&[String]>,
     time_filter: TimeFilter,
 ) -> RenderCache {
@@ -872,7 +868,7 @@ fn build_render_cache(
     let date_filter = |d: NaiveDate| date_in_filter(d, time_filter, today_snap);
     let stats = index.build_model_stats(
         &cwd_to_root,
-        index_root,
+        roots,
         &date_filter,
         project_cwds,
         time_filter.is_intraday(),
@@ -914,8 +910,13 @@ fn build_render_cache(
 
     // In the Codex source view there are no cards (Codex has no ProjectGroup),
     // so surface a dedicated per-model breakdown built from the model stats.
-    let codex_breakdown = (index_root == Some(crate::data::codex::CODEX_ROOT))
-        .then(|| build_codex_breakdown(&stats));
+    // Built whenever Codex is part of the view (All or the dedicated Codex
+    // source) — Codex has no ProjectGroup/card, so this panel is how its
+    // per-model usage surfaces. Empty rows ⇒ no panel rendered.
+    let codex_breakdown = roots
+        .matches(crate::data::codex::CODEX_ROOT)
+        .then(|| build_codex_breakdown(&stats))
+        .filter(|b| !b.rows.is_empty());
 
     RenderCache {
         filtered,
@@ -1107,17 +1108,14 @@ fn build_source_list(
             SourceEntry {
                 name: "All".to_string(),
                 roots: RootFilter::All,
-                index_root: None,
             },
             SourceEntry {
                 name: "Claude Code".to_string(),
                 roots: RootFilter::Exclude(CODEX_ROOT.to_string()),
-                index_root: None,
             },
             SourceEntry {
                 name: "Codex".to_string(),
                 roots: RootFilter::Only(CODEX_ROOT.to_string()),
-                index_root: Some(CODEX_ROOT.to_string()),
             },
         ];
     }
@@ -1128,7 +1126,6 @@ fn build_source_list(
         return vec![SourceEntry {
             name: "All".to_string(),
             roots: RootFilter::All,
-            index_root: None,
         }];
     }
 
@@ -1138,7 +1135,6 @@ fn build_source_list(
     let mut sources = vec![SourceEntry {
         name: "All".to_string(),
         roots: RootFilter::All,
-        index_root: None,
     }];
 
     for root in roots {
@@ -1152,8 +1148,7 @@ fn build_source_list(
         let root_str = root.to_string_lossy().to_string();
         sources.push(SourceEntry {
             name: display,
-            roots: RootFilter::Only(root_str.clone()),
-            index_root: Some(root_str),
+            roots: RootFilter::Only(root_str),
         });
     }
 

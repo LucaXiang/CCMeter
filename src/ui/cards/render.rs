@@ -239,15 +239,26 @@ pub fn render(
 
     let t = theme();
 
-    // Model legend at top (1 line)
-    let legend_spans: Vec<Span> = vec![
-        Span::styled("■", Style::default().fg(t.model_color("opus"))),
-        Span::styled(" opus ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("sonnet"))),
-        Span::styled(" sonnet ", Style::default().fg(t.text_dim)),
-        Span::styled("■", Style::default().fg(t.model_color("haiku"))),
-        Span::styled(" haiku", Style::default().fg(t.text_dim)),
-    ];
+    // Model legend at top (1 line) — dynamic: the models actually present
+    // across the visible cards (Claude families and/or specific models like
+    // gpt-5.5), ordered by total share, capped to keep it to one line.
+    let mut model_totals: HashMap<&str, f64> = HashMap::new();
+    for c in cards {
+        for (m, s) in &c.model_shares {
+            *model_totals.entry(m.as_str()).or_default() += s;
+        }
+    }
+    let mut models: Vec<(&str, f64)> = model_totals.into_iter().collect();
+    models.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(b.0))
+    });
+    let mut legend_spans: Vec<Span> = Vec::new();
+    for (m, _) in models.iter().take(6) {
+        legend_spans.push(Span::styled("■", Style::default().fg(t.model_color(m))));
+        legend_spans.push(Span::styled(format!(" {m} "), Style::default().fg(t.text_dim)));
+    }
     let legend = Paragraph::new(Line::from(legend_spans)).alignment(Alignment::Right);
     frame.render_widget(legend, Rect::new(area.x, area.y, area.width, 1));
 
