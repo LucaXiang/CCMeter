@@ -43,6 +43,7 @@ pub(super) fn render_credential_cards(
     selected: Option<usize>,
     credential_roots: &[String],
     week_costs: &[f64],
+    month_costs: &[f64],
 ) {
     let t = theme();
 
@@ -80,7 +81,16 @@ pub(super) fn render_credential_cards(
     for (i, cred) in credentials.iter().enumerate() {
         let is_selected = selected == Some(i);
         let week_cost = week_costs.get(i).copied().unwrap_or(0.0);
-        render_card(frame, cols[i], cred, credential_roots, is_selected, week_cost);
+        let month_cost = month_costs.get(i).copied().unwrap_or(0.0);
+        render_card(
+            frame,
+            cols[i],
+            cred,
+            credential_roots,
+            is_selected,
+            week_cost,
+            month_cost,
+        );
     }
 }
 
@@ -91,6 +101,7 @@ fn render_card(
     credential_roots: &[String],
     is_selected: bool,
     week_cost: f64,
+    month_cost: f64,
 ) {
     let t = theme();
     let root_str = cred.source_root.to_string_lossy().to_string();
@@ -101,10 +112,10 @@ fn render_card(
     let sub = cred.subscription_type.as_deref().unwrap_or("?");
     let title_left = format!(" {} ({}) ", name, sub);
 
-    // Title bar, right-aligned: real overage charge if the provider bills one,
-    // otherwise the trailing-7d API-equivalent spend (so the slot is never an
-    // empty $0.00/$300.00 and Codex — which has no overage — also shows a $).
-    let title_right = spend_title(week_cost, cred.usage.as_ref());
+    // Title bar, right-aligned: trailing-7d API-equivalent spend (never an
+    // empty $0.00/$300.00; Codex shows a $ too) plus a value multiplier vs the
+    // subscription price (30d spend ÷ plan price), or a real overage charge.
+    let title_right = spend_title(week_cost, month_cost, cred);
 
     let border_color = if is_selected {
         t.border_highlight
@@ -146,8 +157,10 @@ fn render_card(
 }
 
 /// Right-side title spans: the real overage bar when the provider is actually
-/// charging overage, otherwise the trailing-7d API-equivalent spend.
-fn spend_title(week_cost: f64, usage: Option<&UsageReport>) -> Vec<Span<'static>> {
+/// charging overage, otherwise the trailing-7d API-equivalent spend plus a
+/// value multiplier (30d spend ÷ subscription price) when the plan is known.
+fn spend_title(week_cost: f64, month_cost: f64, cred: &OAuthCredential) -> Vec<Span<'static>> {
+    let usage = cred.usage.as_ref();
     let has_overage_charge = usage
         .and_then(|u| u.extra_usage.as_ref())
         .map(|e| e.is_enabled && e.used_credits.unwrap_or(0.0) > 0.0)
@@ -155,12 +168,24 @@ fn spend_title(week_cost: f64, usage: Option<&UsageReport>) -> Vec<Span<'static>
     if has_overage_charge {
         return extra_usage_title(usage);
     }
-    vec![Span::styled(
+    let t = theme();
+    let mut spans = vec![Span::styled(
         format!(" {} ·7d ", crate::data::models::format_cost(week_cost)),
-        Style::default()
-            .fg(theme().cost)
-            .add_modifier(Modifier::BOLD),
-    )]
+        Style::default().fg(t.cost).add_modifier(Modifier::BOLD),
+    )];
+    if let Some(price) = cred
+        .subscription_type
+        .as_deref()
+        .and_then(|plan| crate::data::models::plan_monthly_usd(cred.is_codex(), plan))
+        && price > 0.0
+        && month_cost > 0.0
+    {
+        spans.push(Span::styled(
+            format!("· {:.0}× value ", month_cost / price),
+            Style::default().fg(t.lines_positive),
+        ));
+    }
+    spans
 }
 
 /// Build extra usage spans for the block title (right side).

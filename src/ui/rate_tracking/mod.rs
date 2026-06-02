@@ -75,15 +75,15 @@ pub(crate) fn render(
     // Per-credential API-equivalent spend over the trailing 7 days, shown in
     // each card's title so both Claude and Codex carry a live $ figure.
     let now_local = chrono::Local::now().naive_local();
-    let week_ago = now_local - chrono::Duration::days(7);
-    let week_costs: Vec<f64> = credentials
-        .iter()
-        .map(|c| {
-            let root = c.source_root.to_string_lossy();
-            let (f, ca, o) = index.cost_in_window_split(&root, week_ago, now_local);
-            f + ca + o
-        })
-        .collect();
+    let span_cost = |c: &OAuthCredential, days: i64| -> f64 {
+        let root = c.source_root.to_string_lossy();
+        let (f, ca, o) =
+            index.cost_in_window_split(&root, now_local - chrono::Duration::days(days), now_local);
+        f + ca + o
+    };
+    let week_costs: Vec<f64> = credentials.iter().map(|c| span_cost(c, 7)).collect();
+    // 30-day spend → API-equivalent "value multiplier" vs the subscription price.
+    let month_costs: Vec<f64> = credentials.iter().map(|c| span_cost(c, 30)).collect();
 
     let selected_cred = selected
         .filter(|&i| i < credentials.len())
@@ -123,6 +123,7 @@ pub(crate) fn render(
         selected,
         &credential_roots,
         &week_costs,
+        &month_costs,
     );
 
     let bars = compute_session_bars(

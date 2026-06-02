@@ -124,6 +124,27 @@ pub(crate) fn model_breakdown_label(model: &str) -> String {
     }
 }
 
+/// Best-effort monthly subscription price (USD) for a plan, so the UI can show
+/// an API-equivalent "value multiplier" (estimated cost ÷ subscription). Prices
+/// are approximate and depend on the provider: e.g. "pro" is ~$20 for Claude
+/// but ~$200 for ChatGPT/Codex. `None` when unknown / free.
+pub(crate) fn plan_monthly_usd(is_codex: bool, plan: &str) -> Option<f64> {
+    let p = plan.to_ascii_lowercase();
+    if is_codex {
+        match p.as_str() {
+            "pro" => Some(200.0),
+            "plus" | "prolite" => Some(20.0),
+            _ => None,
+        }
+    } else {
+        match p.as_str() {
+            "max" => Some(100.0),
+            "pro" => Some(20.0),
+            _ => None,
+        }
+    }
+}
+
 /// Format a token count as a human-readable string (e.g. "1.2M", "450K", "99").
 pub(crate) fn format_tokens(n: u64) -> String {
     if n >= 1_000_000_000 {
