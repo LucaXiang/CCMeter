@@ -211,6 +211,7 @@ impl App {
 
         let root_paths = sorted_root_paths(&root_cwd_map);
         let mut fresh_hits = crate::data::rate_limits::discover_rate_limit_hits(&root_paths);
+        fresh_hits.extend(crate::data::codex::rate::discover_codex_rate_limit_hits());
         compute_hit_tokens(&mut fresh_hits, &index);
         let mut hit_history = hit_history::load();
         let merge = hit_history.merge_fresh_hits(&fresh_hits);
@@ -370,6 +371,7 @@ impl App {
                 .map(std::path::PathBuf::from)
                 .collect();
         let mut fresh_hits = crate::data::rate_limits::discover_rate_limit_hits(&root_paths);
+        fresh_hits.extend(crate::data::codex::rate::discover_codex_rate_limit_hits());
         compute_hit_tokens(&mut fresh_hits, &self.data.index);
         let merge = self.data.hit_history.merge_fresh_hits(&fresh_hits);
         self.data.rate_limit_hits = merge.hits;
