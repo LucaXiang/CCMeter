@@ -227,6 +227,13 @@ impl App {
             _ => View::Main, // includes "main" and any unknown value
         };
 
+        let lang = settings
+            .language
+            .as_deref()
+            .map(crate::ui::i18n::from_lang_str)
+            .unwrap_or_else(crate::ui::i18n::detect);
+        crate::ui::i18n::set_lang(lang);
+
         let cwds_filter = project_cwds_static(&groups, project_index);
 
         let render = build_render_cache(

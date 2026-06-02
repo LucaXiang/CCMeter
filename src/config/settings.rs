@@ -12,6 +12,8 @@ pub struct Settings {
     pub time_filter: Option<TimeFilter>,
     #[serde(default)]
     pub last_view: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl Settings {
